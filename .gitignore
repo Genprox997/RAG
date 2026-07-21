@@ -1,0 +1,43 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== Virtual env =====
+.venv/
+venv/
+env/
+ENV/
+
+# ===== Secrets (keep .env.example tracked) =====
+.env
+.env.*
+!.env.example
+
+# ===== Project data: large / generated (do NOT commit) =====
+# 905MB 原始语料（含大批 PDF）不入库，仅保留一个样例文件让 Demo 可跑
+data/docs/*
+!data/docs/sample_rag.md
+# 运行时生成的索引（FAISS + BM25 + chunks）
+data/index/
+
+# ===== Local tooling / memory =====
+.workbuddy/
+
+# ===== Editor / OS =====
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ===== Logs / temp =====
+*.log
+*.tmp
+.cache/
