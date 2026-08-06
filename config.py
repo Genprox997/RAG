@@ -34,11 +34,13 @@ class Settings:
     embed_model: str = _get("EMBED_MODEL", "text-embedding-3-small")
     embed_dim: int = int(_get("EMBED_DIM", "1536"))
 
-    # ---- Reranker (optional, cloud cross-encoder) ----
-    # none | jina | cohere
+    # ---- Reranker (optional, cloud cross-encoder or local offline) ----
+    # none | jina | cohere | local
     rerank_provider: str = _get("RERANK_PROVIDER", "none")
     rerank_api_key: str = _get("RERANK_API_KEY", "")
     rerank_model: str = _get("RERANK_MODEL", "jina-reranker-v2-base-multilingual")
+    # local backend: embedding (reuse cached encoder) | cross-encoder (bge-reranker-v2-m3)
+    local_reranker: str = _get("LOCAL_RERANKER", "embedding")
 
     # ---- Retrieval ----
     top_k_vector: int = int(_get("TOP_K_VECTOR", "20"))

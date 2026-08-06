@@ -121,8 +121,10 @@ class HybridIndex:
         ordered = sorted(fused.items(), key=lambda x: x[1], reverse=True)
         candidates = ordered[: max(top_k_final * 4, 12)]
 
-        # optional cloud rerank
-        if self.s.rerank_provider in ("jina", "cohere") and self.s.rerank_api_key:
+        # optional rerank
+        if self.s.rerank_provider == "local":
+            candidates = self._local_rerank(query, candidates)
+        elif self.s.rerank_provider in ("jina", "cohere") and self.s.rerank_api_key:
             candidates = self._rerank(query, candidates)
 
         hits: list[Hit] = []
@@ -159,6 +161,34 @@ class HybridIndex:
             return reranked
         except Exception as e:
             print(f"[warn] rerank failed, falling back to RRF: {e}")
+            return candidates
+
+    # ---- local offline rerank ----
+    def _local_rerank(self, query: str, candidates: list[tuple[int, float]]) -> list[tuple[int, float]]:
+        from collections import defaultdict
+
+        from src.rerank import LocalReranker
+
+        docs = [self.chunks[cid]["text"] for cid, _ in candidates]
+        try:
+            reranker = LocalReranker(backend=self.s.local_reranker)
+            ranked_docs, scores = reranker.rerank(query, docs)
+            # map reordered docs back to (chunk_id, score) by occurrence position,
+            # so even duplicate chunk texts map to distinct candidates.
+            occ: dict[int, list[int]] = defaultdict(list)
+            for i, d in enumerate(docs):
+                occ[id(d)].append(i)
+
+            def _orig_idx(d: str) -> int:
+                return occ[id(d)].pop(0)
+
+            reranked = [
+                (candidates[_orig_idx(d)][0], float(sc))
+                for d, sc in zip(ranked_docs, scores)
+            ]
+            return reranked
+        except Exception as e:
+            print(f"[warn] local rerank failed, falling back to RRF: {e}")
             return candidates
 
 

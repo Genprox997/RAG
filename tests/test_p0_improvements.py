@@ -65,7 +65,7 @@ def _write_synthetic_index(tmp, dim, meta_dim=None, provider="local"):
     with open(os.path.join(tmp, "bm25.pkl"), "wb") as f:
         pickle.dump(bm, f)
 
-    chunks = [{"chunk_id": i, "text": "x", "source": f"d{i}", "n_tokens": 1} for i in range(5)]
+    chunks = [{"chunk_id": i, "text": f"unique chunk text {i} 光学设计", "source": f"d{i}", "n_tokens": 1} for i in range(5)]
     with open(os.path.join(tmp, "chunks.json"), "w", encoding="utf-8") as f:
         json.dump(chunks, f, ensure_ascii=False)
 
@@ -235,6 +235,66 @@ def test_eval_wiring_with_fake_hits():
     assert metrics["recall@1"] == 0.0
     assert metrics["recall@3"] == 1.0
     assert metrics["mrr"] == 0.5
+
+
+# ------------------- P1-1: local offline reranker -------------------
+def test_rerank_ordering_with_injected_scorer():
+    from src.rerank import LocalReranker
+
+    docs = ["关于苹果公司的财报", "足球比赛的战术分析", "苹果手机的最新评测"]
+    reranker = LocalReranker(scorer=lambda q, d: 1.0 if "苹果" in d else 0.0)
+    ranked, scores = reranker.rerank("苹果", docs)
+    assert ranked[0] in ("关于苹果公司的财报", "苹果手机的最新评测")
+    assert "足球" not in ranked[0]
+    assert scores[0] >= scores[-1]
+
+
+def test_rerank_cross_encoder_missing_falls_back(monkeypatch):
+    import sys
+
+    import src.llm as LLM
+    from src.rerank import LocalReranker
+
+    # Force sentence_transformers to look "missing" so cross-encoder backend
+    # must fall back to the embedding backend (fully offline).
+    monkeypatch.setitem(sys.modules, "sentence_transformers", None)
+
+    def fake_embed(texts, task=None):
+        return [[1.0, 0.0] if "苹果" in t else [0.0, 1.0] for t in texts]
+
+    monkeypatch.setattr(LLM, "embed", fake_embed)
+    reranker = LocalReranker(backend="cross-encoder")
+    docs = ["关于苹果公司的财报", "足球比赛的战术分析", "苹果手机的最新评测"]
+    ranked, _ = reranker.rerank("苹果", docs)
+    assert ranked[0] in ("关于苹果公司的财报", "苹果手机的最新评测")
+
+
+def test_retrieve_routes_to_local_rerank(monkeypatch, tmp_path):
+    import src.rerank as RR
+    import src.retrieval as R
+    from src.retrieval import HybridIndex
+
+    _write_synthetic_index(str(tmp_path), dim=8, provider="local")
+    monkeypatch.setattr(R.llm, "embed", lambda texts, task=None: [[1.0] * 8 for _ in texts])
+    hi = HybridIndex(str(tmp_path))
+
+    # baseline order under RRF only
+    hi.s.rerank_provider = "none"
+    base = [h.source for h in hi.retrieve("q")]
+
+    # route to local rerank via a fake reranker that reverses candidate order
+    class _FakeReranker:
+        def __init__(self, *a, **k):
+            pass
+
+        def rerank(self, query, documents, top_n=None):
+            rev = list(reversed(documents))
+            return rev, [float(len(rev) - i) for i in range(len(rev))]
+
+    monkeypatch.setattr(RR, "LocalReranker", _FakeReranker)
+    hi.s.rerank_provider = "local"
+    reranked = [h.source for h in hi.retrieve("q")]
+    assert reranked == list(reversed(base)), (reranked, base)
 
 
 

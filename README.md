@@ -15,7 +15,7 @@
 | **向量检索** | FAISS (IndexFlatIP, cosine) | 向量库底层原理 |
 | **关键词检索** | BM25（中英混合分词） | 稀疏检索 + 中文支持 |
 | **融合** | Reciprocal Rank Fusion (RRF) | 混合检索工程实现 |
-| **重排** | 云端 Cross-Encoder（Jina/Cohere） | 两阶段检索范式 |
+| **重排** | 云端 Cross-Encoder（Jina/Cohere）/ **本地离线重排** | 两阶段检索范式 |
 | **Agentic** | Query 改写/分解 → 多步检索 → LLM 自省 | Self-RAG 思路 |
 | **生成** | 流式输出 + 强制引用 [n] | 引用溯源 / 可控生成 |
 | **评测** | Faithfulness / Answer Relevancy / Context Relevance | RAGAS 式自动评测 |
@@ -74,7 +74,9 @@ python run.py "Agentic RAG 的自省循环包含哪些步骤？"
 streamlit run app.py
 ```
 
-可选：开启重排 — 在 `.env` 设置 `RERANK_PROVIDER=jina` 并填入 `RERANK_API_KEY`。
+可选：开启重排：
+- **云端**：在 `.env` 设置 `RERANK_PROVIDER=jina`（或 `cohere`）并填入 `RERANK_API_KEY`。
+- **本地离线（推荐，全离线、零额外下载）**：设置 `RERANK_PROVIDER=local`，默认用已缓存的 bge 编码器对候选做 query-doc 余弦重排（`LOCAL_RERANKER=embedding`）；若已安装 `sentence_transformers`，可设 `LOCAL_RERANKER=cross-encoder` 启用 `bge-reranker-v2-m3` 真·交叉编码器（不可用时自动回退到 embedding 后端）。
 
 > **离线 Embedding（推荐，免 API 费用）**：默认走云端 Embedding（需 `EMBED_API_KEY`）。
 > 也可在 `.env` 设置 `EMBED_PROVIDER=local`，改用本地 `fastembed` 模型（`BAAI/bge-small-zh-v1.5`，512 维，中文优化），无需联网即可建库。
@@ -108,7 +110,8 @@ python -m src.eval
 │   ├── llm.py             # LLM / Embedding 客户端（OpenAI 兼容 + 流式）
 │   ├── tokenize.py        # 中英混合分词（BM25 用）
 │   ├── ingestion.py       # 加载 / 切分 / 入库 / 持久化
-│   ├── retrieval.py       # 混合检索 + RRF + 云端重排
+│   ├── retrieval.py       # 混合检索 + RRF + 重排（云端/本地）
+│   ├── rerank.py          # 本地离线重排器（embedding / cross-encoder 后端）
 │   ├── agent.py           # Agentic 自省循环
 │   ├── generator.py       # 带引用的生成
 │   └── eval.py            # RAGAS 式评测
