@@ -5,7 +5,8 @@ import datetime
 import json
 import os
 import pickle
-from dataclasses import dataclass, asdict
+import re
+from dataclasses import dataclass, asdict, field
 
 import faiss
 import numpy as np
@@ -33,6 +34,8 @@ class Chunk:
     text: str
     source: str
     n_tokens: int
+    chunk_type: str = "text"  # "text" | "figure" | "equation" | "table"
+    meta: dict = field(default_factory=dict)  # page / bbox / kind, etc.
 
 
 # ---------- loaders ----------
@@ -132,6 +135,91 @@ def _load_pdf(path: str) -> str:
     return _pdf_text_ocr(path)
 
 
+# ---------- multimodal: figure / equation / table caption extraction ----------
+# PyMuPDF exposes image blocks (type==1) and text blocks (type==0) with bboxes.
+# A "figure chunk" pairs an image region with its nearest caption so the caption
+# text becomes the retrievable payload (the image itself is referenced via meta).
+_CAP_RE = re.compile(
+    r"^\s*(图|表|公式|式|Fig\.?|Figure|Table|Equation)", re.IGNORECASE
+)
+
+
+def _block_text(block: dict) -> str:
+    return "\n".join(
+        "".join(span.get("text", "") for span in line.get("spans", []))
+        for line in block.get("lines", [])
+    ).strip()
+
+
+def _caption_kind(text: str) -> str:
+    t = text.strip()
+    if re.match(r"^(图|Fig\.?|Figure)", t, re.IGNORECASE):
+        return "figure"
+    if re.match(r"^(表|Table)", t, re.IGNORECASE):
+        return "table"
+    if re.match(r"^(公式|式|Equation)", t, re.IGNORECASE):
+        return "equation"
+    return "figure"
+
+
+def _nearest_caption(text_blocks: list[dict], bbox: list[float]) -> tuple[str, str]:
+    """Pick the caption-looking text block closest (vertically) to an image bbox."""
+    best: tuple[str, str] | None = None
+    best_d: float | None = None
+    for tb in text_blocks:
+        txt = _block_text(tb)
+        if not txt or not _CAP_RE.match(txt):
+            continue
+        tb_bbox = tb.get("bbox", [0, 0, 0, 0])
+        # distance to image: prefer a caption just below, allow one just above
+        below = abs(tb_bbox[1] - bbox[3])
+        above = abs(bbox[1] - tb_bbox[3])
+        dist = min(below, above)
+        if best_d is None or dist < best_d:
+            best_d = dist
+            best = (txt, _caption_kind(txt))
+    return best or ("", "figure")
+
+
+def _extract_figures_from_pdf(path: str) -> list[dict]:
+    """Return figure/equation/table regions with their captions.
+
+    Each item: {"page", "index", "kind", "caption", "bbox"}.
+    Returns [] if PyMuPDF is unavailable or the PDF has no images.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        return []
+    doc = fitz.open(path)
+    try:
+        results: list[dict] = []
+        idx = 0
+        for pno, page in enumerate(doc, start=1):
+            try:
+                blocks = page.get_text("dict").get("blocks", [])
+            except Exception:
+                continue
+            imgs = [b for b in blocks if b.get("type") == 1]
+            texts = [b for b in blocks if b.get("type") == 0]
+            for im in imgs:
+                bbox = [round(float(x), 1) for x in im.get("bbox", [0, 0, 0, 0])]
+                caption, kind = _nearest_caption(texts, im.get("bbox", [0, 0, 0, 0]))
+                idx += 1
+                results.append(
+                    {
+                        "page": pno,
+                        "index": idx,
+                        "kind": kind,
+                        "caption": caption,
+                        "bbox": bbox,
+                    }
+                )
+        return results
+    finally:
+        doc.close()
+
+
 def load_documents(docs_dir: str) -> list[dict]:
     """Return list of {'source', 'text'} from .txt/.md/.pdf under docs_dir."""
     docs: list[dict] = []
@@ -144,12 +232,25 @@ def load_documents(docs_dir: str) -> list[dict]:
             try:
                 if lower.endswith((".txt", ".md", ".markdown")):
                     text = _load_txt(path)
+                    if text.strip():
+                        docs.append({"path": path, "source": fn, "text": text})
                 elif lower.endswith(".pdf"):
                     text = _load_pdf(path)
+                    if text.strip():
+                        docs.append({"path": path, "source": fn, "text": text})
+                    # multimodal: pair each image region with its caption
+                    for fig in _extract_figures_from_pdf(path):
+                        docs.append(
+                            {
+                                "path": path,
+                                "source": f"{fn}#fig{fig['page']}-{fig['index']}",
+                                "text": fig["caption"]
+                                or f"[{fig['kind']} on page {fig['page']}]",
+                                "figure": fig,
+                            }
+                        )
                 else:
                     continue
-                if text.strip():
-                    docs.append({"source": fn, "text": text})
             except Exception as e:  # skip bad files, keep pipeline alive
                 print(f"[warn] skip {path}: {e}")
     return docs
@@ -205,15 +306,29 @@ def chunk_text(text: str, max_tokens: int = 400, overlap: int = 80) -> list[str]
 def build_chunks(docs: list[dict], max_tokens: int = 400, overlap: int = 80) -> list[Chunk]:
     chunks: list[Chunk] = []
     for d in docs:
-        for piece in chunk_text(d["text"], max_tokens, overlap):
+        fig = d.get("figure")
+        if fig is not None:
+            # a figure/equation/table: one chunk, caption is the retrievable text
             chunks.append(
                 Chunk(
                     chunk_id=len(chunks),
-                    text=piece,
+                    text=d["text"],
                     source=d["source"],
-                    n_tokens=count_tokens(piece),
+                    n_tokens=count_tokens(d["text"]),
+                    chunk_type=fig.get("kind", "figure"),
+                    meta={"page": fig["page"], "bbox": fig["bbox"], "kind": fig["kind"]},
                 )
             )
+        else:
+            for piece in chunk_text(d["text"], max_tokens, overlap):
+                chunks.append(
+                    Chunk(
+                        chunk_id=len(chunks),
+                        text=piece,
+                        source=d["source"],
+                        n_tokens=count_tokens(piece),
+                    )
+                )
     return chunks
 
 

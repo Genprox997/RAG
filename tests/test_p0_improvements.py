@@ -788,3 +788,185 @@ def test_tokenize_empty_and_punctuation():
     assert tokenize("！！！ ...") == []
 
 
+# ----------------- P2-5: multimodal figure / caption extraction ----------------
+import sys
+import types
+
+
+def _mk_img(bbox):
+    return {"type": 1, "bbox": bbox}
+
+
+def _mk_text(text, bbox):
+    return {"type": 0, "bbox": bbox, "lines": [{"spans": [{"text": text}]}]}
+
+
+def _install_fake_fitz(pages):
+    """Inject a minimal fake PyMuPDF module so figure extraction runs offline."""
+    mod = types.ModuleType("fitz")
+
+    class _FakePage:
+        def __init__(self, blocks):
+            self._blocks = blocks
+
+        def get_text(self, kind):
+            return {"blocks": self._blocks}
+
+    class _FakeDoc:
+        def __init__(self, pages):
+            self._pages = [_FakePage(b) for b in pages]
+
+        def __iter__(self):
+            return iter(self._pages)
+
+        def __len__(self):
+            return len(self._pages)
+
+        def close(self):
+            pass
+
+    mod.open = lambda path: _FakeDoc(pages)
+    saved = sys.modules.get("fitz")
+    sys.modules["fitz"] = mod
+    return saved
+
+
+def _uninstall_fake_fitz(saved):
+    if saved is None:
+        sys.modules.pop("fitz", None)
+    else:
+        sys.modules["fitz"] = saved
+
+
+def test_extract_figures_captioned_image():
+    from src import ingestion
+
+    pages = [[_mk_img([10, 10, 100, 80]), _mk_text("图1：光学系统结构示意图", [10, 82, 200, 100])]]
+    saved = _install_fake_fitz(pages)
+    try:
+        figs = ingestion._extract_figures_from_pdf("dummy.pdf")
+    finally:
+        _uninstall_fake_fitz(saved)
+    assert len(figs) == 1
+    assert figs[0]["kind"] == "figure"
+    assert "图1" in figs[0]["caption"]
+    assert figs[0]["page"] == 1
+    assert figs[0]["bbox"] == [10.0, 10.0, 100.0, 80.0]
+
+
+def test_extract_figures_equation_caption():
+    from src import ingestion
+
+    pages = [[_mk_img([10, 10, 100, 80]), _mk_text("公式（3）：像差平衡方程", [10, 82, 200, 100])]]
+    saved = _install_fake_fitz(pages)
+    try:
+        figs = ingestion._extract_figures_from_pdf("dummy.pdf")
+    finally:
+        _uninstall_fake_fitz(saved)
+    assert len(figs) == 1
+    assert figs[0]["kind"] == "equation"
+
+
+def test_extract_figures_table_caption():
+    from src import ingestion
+
+    pages = [[_mk_img([10, 10, 100, 80]), _mk_text("表2：透镜参数汇总", [10, 82, 200, 100])]]
+    saved = _install_fake_fitz(pages)
+    try:
+        figs = ingestion._extract_figures_from_pdf("dummy.pdf")
+    finally:
+        _uninstall_fake_fitz(saved)
+    assert len(figs) == 1
+    assert figs[0]["kind"] == "table"
+
+
+def test_extract_figures_no_caption():
+    from src import ingestion
+
+    pages = [[_mk_img([10, 10, 100, 80])]]
+    saved = _install_fake_fitz(pages)
+    try:
+        figs = ingestion._extract_figures_from_pdf("dummy.pdf")
+    finally:
+        _uninstall_fake_fitz(saved)
+    assert len(figs) == 1
+    assert figs[0]["caption"] == ""
+    assert figs[0]["kind"] == "figure"
+
+
+def test_extract_figures_no_images():
+    from src import ingestion
+
+    pages = [[_mk_text("纯文本段落没有图像。", [0, 0, 100, 20])]]
+    saved = _install_fake_fitz(pages)
+    try:
+        figs = ingestion._extract_figures_from_pdf("dummy.pdf")
+    finally:
+        _uninstall_fake_fitz(saved)
+    assert figs == []
+
+
+def test_extract_figures_fitz_missing_returns_empty():
+    import builtins
+
+    from src import ingestion
+
+    real_import = builtins.__import__
+    saved_fitz = sys.modules.pop("fitz", None)
+
+    def _block_fitz(name, *a, **k):
+        if name == "fitz" or name.startswith("fitz."):
+            raise ImportError("fitz not installed")
+        return real_import(name, *a, **k)
+
+    builtins.__import__ = _block_fitz
+    try:
+        assert ingestion._extract_figures_from_pdf("x.pdf") == []
+    finally:
+        builtins.__import__ = real_import
+        if saved_fitz is not None:
+            sys.modules["fitz"] = saved_fitz
+
+
+def test_build_chunks_emits_figure_chunk():
+    from src.ingestion import build_chunks
+
+    docs = [
+        {
+            "source": "paper.pdf#fig1-1",
+            "text": "图1：光学系统结构示意图",
+            "figure": {
+                "page": 1,
+                "index": 1,
+                "kind": "figure",
+                "caption": "图1：光学系统结构示意图",
+                "bbox": [10.0, 10.0, 100.0, 80.0],
+            },
+        }
+    ]
+    chunks = build_chunks(docs)
+    assert len(chunks) == 1
+    c = chunks[0]
+    assert c.chunk_type == "figure"
+    assert c.meta["page"] == 1
+    assert c.meta["kind"] == "figure"
+    assert c.text == "图1：光学系统结构示意图"
+
+
+def test_build_chunks_mixes_text_and_figure():
+    from src.ingestion import build_chunks
+
+    docs = [
+        {"source": "a.md", "text": "短文本。"},
+        {
+            "source": "p.pdf#fig1-1",
+            "text": "图2：光路图",
+            "figure": {"page": 1, "index": 1, "kind": "figure", "caption": "图2：光路图", "bbox": [0, 0, 1, 1]},
+        },
+    ]
+    chunks = build_chunks(docs)
+    assert len(chunks) == 2
+    assert chunks[0].chunk_type == "text"
+    assert chunks[1].chunk_type == "figure"
+
+

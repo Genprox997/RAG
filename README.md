@@ -12,6 +12,7 @@
 | 模块 | 技术点 | 简历亮点 |
 |------|--------|----------|
 | **切分** | 递归切分 + 重叠 + token 感知 | Chunking 策略意识 |
+| **多模态** | PDF 图表/公式/表 caption 提取为 `chunk_type='figure'` 切块（PyMuPDF 图像块 + 邻近图题配对） | Multimodal RAG |
 | **向量检索** | FAISS (IndexFlatIP, cosine) | 向量库底层原理 |
 | **关键词检索** | BM25（中英混合分词） | 稀疏检索 + 中文支持 |
 | **融合** | Reciprocal Rank Fusion (RRF) | 混合检索工程实现 |
@@ -137,7 +138,7 @@ python -m src.eval
 ## 🔧 可扩展点（加分项）
 
 - 接本地模型：用 Ollama / vLLM 替换云端端点实现离线 RAG。
-- 多模态：用 layout 检测把 PDF 图表/表格纳入检索。
+- 多模态：已实现——PDF 图表/公式/表 caption 配对为 `figure` 切块（见核心特性表）。
 - 高级切分：按标题层级 + 表格感知切分。
 - 评测深化：接入 RAGAS / 人工标注集做回归。
 
