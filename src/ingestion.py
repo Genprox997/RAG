@@ -1,6 +1,7 @@
 """
 Document ingestion: load -> chunk -> embed -> build hybrid index (FAISS + BM25).
 """
+import datetime
 import json
 import os
 import pickle
@@ -217,10 +218,25 @@ def build_chunks(docs: list[dict], max_tokens: int = 400, overlap: int = 80) -> 
 
 
 # ---------- index build & persist ----------
+def _build_meta(chunks: list[Chunk], dim: int) -> dict:
+    """Build index metadata so loading can validate compatibility."""
+    s = config.get_settings()
+    return {
+        "version": 1,
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "embed_provider": s.embed_provider,
+        "embed_model": s.embed_model,
+        "embed_dim": dim,
+        "faiss_metric": "IP",
+        "index_type": "IndexFlatIP",
+        "tokenizer": "cjk_bigram",
+        "chunk_count": len(chunks),
+    }
+
+
 def build_and_save(chunks: list[Chunk], index_dir: str | None = None) -> dict:
     index_dir = index_dir or config.get_settings().index_dir
     os.makedirs(index_dir, exist_ok=True)
-    # s = config.get_settings()
 
     texts = [c.text for c in chunks]
     embeddings = llm.embed(texts, task="retrieval.passage")
@@ -244,6 +260,8 @@ def build_and_save(chunks: list[Chunk], index_dir: str | None = None) -> dict:
         pickle.dump(bm25, f)
     with open(os.path.join(index_dir, "chunks.json"), "w", encoding="utf-8") as f:
         json.dump([asdict(c) for c in chunks], f, ensure_ascii=False, indent=2)
+    with open(os.path.join(index_dir, "index_meta.json"), "w", encoding="utf-8") as f:
+        json.dump(_build_meta(chunks, dim), f, ensure_ascii=False, indent=2)
 
     return {
         "n_chunks": len(chunks),

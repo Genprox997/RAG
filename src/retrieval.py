@@ -38,11 +38,53 @@ class HybridIndex:
         with open(os.path.join(self.index_dir, "chunks.json"), "r", encoding="utf-8") as f:
             self.chunks = json.load(f)
         self.s = s
+        self.meta = self._load_meta()
+        self._validate()
+
+    def _load_meta(self) -> dict | None:
+        path = os.path.join(self.index_dir, "index_meta.json")
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _validate(self) -> None:
+        """Validate index compatibility against recorded metadata + current config.
+
+        Prevents the cryptic FAISS dimension-mismatch crash that used to happen when
+        EMBED_PROVIDER (local 512-dim vs cloud 1536-dim) was switched without rebuilding.
+        """
+        if self.meta is None:
+            return
+        # 1) structural consistency: FAISS dim must equal recorded embed_dim
+        if self.meta.get("embed_dim") != self.index.d:
+            raise RuntimeError(
+                f"Index corruption: meta embed_dim={self.meta.get('embed_dim')} "
+                f"but FAISS index dim={self.index.d}. Rebuild the index."
+            )
+        # 2) provider/dim drift: current config would produce incompatible query vectors
+        if self.s.embed_provider != self.meta.get("embed_provider") or (
+            self.s.embed_provider == "cloud"
+            and int(self.s.embed_dim) != self.meta.get("embed_dim")
+        ):
+            print(
+                f"[warn] Index built with embed_provider={self.meta.get('embed_provider')} "
+                f"model={self.meta.get('embed_model')} dim={self.meta.get('embed_dim')}, "
+                f"but current config is embed_provider={self.s.embed_provider} "
+                f"dim={self.s.embed_dim}. Rebuild the index (`python -m src.ingestion`) "
+                f"to avoid runtime dimension mismatch."
+            )
 
     # ---- vector search ----
     def _vector_search(self, query: str, k: int) -> list[tuple[int, float]]:
         q = llm.embed([query], task="retrieval.query")[0]
         q = np.asarray([q], dtype="float32")
+        if q.shape[1] != self.index.d:
+            raise RuntimeError(
+                f"Query embedding dim {q.shape[1]} != index dim {self.index.d}. "
+                f"The index was built with a different embedder/provider. "
+                f"Rebuild it with `python -m src.ingestion`."
+            )
         faiss.normalize_L2(q)
         k = min(k, self.index.ntotal)
         scores, ids = self.index.search(q, k)
