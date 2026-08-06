@@ -14,6 +14,7 @@ from src import llm
 from src.agent import RAGAgent
 from src.generator import generate, build_context_block
 from src.retrieval import HybridIndex
+from src.metrics import retrieval_metrics
 
 FAITH_PROMPT = """You are evaluating faithfulness of an answer to retrieved context.
 List each distinct factual claim in the ANSWER, then mark whether it is
@@ -117,16 +118,22 @@ def context_relevance(question: str, context_text: str) -> float:
         return 0.0
 
 
-def evaluate_item(agent: RAGAgent, question: str) -> dict:
+def evaluate_item(
+    agent: RAGAgent, question: str, relevant_sources: list[str] | None = None
+) -> dict:
     res = agent.run(question)
     context_text = build_context_block(res.context)
     answer = generate(question, res.context)
+    retrieved_sources = [h.source for h in res.context]
+    ks = sorted(set([1, 3, 5, agent.index.s.top_k_final]))
+    retrieval = retrieval_metrics(relevant_sources or [], retrieved_sources, ks=ks)
     return {
         "question": question,
         "answer": answer,
         "faithfulness": round(faithfulness(answer, context_text), 3),
         "answer_relevancy": round(answer_relevancy(question, answer), 3),
         "context_relevance": round(context_relevance(question, context_text), 3),
+        "retrieval": retrieval,
         "n_iterations": res.iterations,
         "n_chunks": len(res.context),
     }
@@ -136,7 +143,15 @@ def run_evaluation(golden_path: str = "evaluation/golden_set.json", index_dir: O
     with open(golden_path, "r", encoding="utf-8") as f:
         golden = json.load(f)
     agent = RAGAgent(HybridIndex(index_dir))
-    rows = [evaluate_item(agent, item["question"]) for item in golden]
+    rows: list[dict] = []
+    retr_accum: dict[str, list[float]] = {}
+    for item in golden:
+        rel = item.get("relevant_sources")
+        r = evaluate_item(agent, item["question"], relevant_sources=rel)
+        rows.append(r)
+        if rel:
+            for k, v in r.get("retrieval", {}).items():
+                retr_accum.setdefault(k, []).append(v)
 
     n = len(rows) or 1
     agg = {
@@ -144,11 +159,18 @@ def run_evaluation(golden_path: str = "evaluation/golden_set.json", index_dir: O
         "answer_relevancy": round(sum(r["answer_relevancy"] for r in rows) / n, 3),
         "context_relevance": round(sum(r["context_relevance"] for r in rows) / n, 3),
     }
-    return rows, agg
+    agg_retrieval = {
+        k: round(sum(v) / len(v), 3) for k, v in retr_accum.items()
+    }
+    return rows, agg, agg_retrieval
 
 
 if __name__ == "__main__":
-    rows, agg = run_evaluation()
+    rows, agg, agg_retrieval = run_evaluation()
+    print("LLM-judged metrics:")
     print(json.dumps(agg, indent=2, ensure_ascii=False))
+    if agg_retrieval:
+        print("\nRetrieval metrics (source-grounded):")
+        print(json.dumps(agg_retrieval, indent=2, ensure_ascii=False))
     for r in rows:
         print(f"\nQ: {r['question']}\nA: {r['answer'][:200]}...\n  metrics={r}")

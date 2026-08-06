@@ -178,3 +178,63 @@ def test_tokenize_bm25_recall_improves():
     )
 
 
+# ------------------- P0-4: retrieval-level evaluation metrics -------------------
+def test_recall_at_k_basic():
+    from src.metrics import recall_at_k
+
+    rel = ["A"]
+    retrieved = ["B", "A", "C"]
+    assert recall_at_k(rel, retrieved, 1) == 0.0
+    assert recall_at_k(rel, retrieved, 3) == 1.0
+
+
+def test_mrr_basic():
+    from src.metrics import mrr
+
+    assert mrr(["A"], ["B", "A", "C"]) == 0.5
+    assert mrr(["A"], ["B", "C", "D"]) == 0.0
+
+
+def test_hit_rate_basic():
+    from src.metrics import hit_rate
+
+    rel = ["A"]
+    assert hit_rate(rel, ["B", "C", "A"], 2) == 0.0
+    assert hit_rate(rel, ["B", "C", "A"], 5) == 1.0
+
+
+def test_empty_relevant_returns_zero_or_empty():
+    from src.metrics import recall_at_k, retrieval_metrics
+
+    assert recall_at_k([], ["A", "B"], 3) == 0.0
+    assert retrieval_metrics([], ["A", "B"]) == {}
+
+
+def test_retrieval_metrics_bundle():
+    from src.metrics import retrieval_metrics
+
+    out = retrieval_metrics(["A"], ["B", "A", "C"], ks=[1, 3, 5])
+    assert out["recall@1"] == 0.0
+    assert out["recall@3"] == 1.0
+    assert out["recall@5"] == 1.0
+    assert out["mrr"] == 0.5
+    assert out["hit_rate@5"] == 1.0
+
+
+def test_eval_wiring_with_fake_hits():
+    """Mirror evaluate_item's retrieval-metric wiring without the LLM/index."""
+    from types import SimpleNamespace
+
+    from src.metrics import retrieval_metrics
+
+    # fake retrieved chunks (only .source is used, as in eval.py)
+    hits = [SimpleNamespace(source=s) for s in ["B", "A", "C"]]
+    retrieved_sources = [h.source for h in hits]
+    ks = sorted(set([1, 3, 5, 6]))
+    metrics = retrieval_metrics(["A"], retrieved_sources, ks=ks)
+    assert metrics["recall@1"] == 0.0
+    assert metrics["recall@3"] == 1.0
+    assert metrics["mrr"] == 0.5
+
+
+

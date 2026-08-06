@@ -49,7 +49,7 @@
                         Eval (src/eval.py) → 指标报告
 ```
 
-数据流向：`data/docs/*` → 切分 → 云端 Embedding → `data/index/`（FAISS + BM25 + chunks.json）
+数据流向：`data/docs/*` → 切分 → Embedding（本地 fastembed / 云端）→ `data/index/`（FAISS + BM25 + chunks.json + **index_meta.json**）；PDF 优先用 **PyMuPDF** 抽取，稀疏时回退 pdfplumber / pypdf，扫描件可选 OCR。
 
 ---
 
@@ -89,7 +89,9 @@ streamlit run app.py
 ```bash
 python -m src.eval
 ```
-输出各问题及聚合指标（Faithfulness / Answer Relevancy / Context Relevance，均 0–1）。
+输出各问题及聚合指标：
+- **LLM-judged**（均 0–1）：Faithfulness / Answer Relevancy / Context Relevance。
+- **检索级（确定性、可复现）**：recall@k / MRR / hit_rate —— 由 golden 项的 `relevant_sources` 与按秩返回的 source 列表计算，衡量检索本身的质量（需 golden 标注相关来源）。
 
 ---
 

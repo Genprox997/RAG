@@ -1,18 +1,22 @@
 [
   {
     "question": "什么是混合检索，它为什么要结合向量检索和 BM25？",
-    "reference_answer": "混合检索同时执行稠密向量检索和 BM25 稀疏检索，再用 RRF 融合排名；向量检索擅长语义匹配但容易漏关键词，BM25 对专有名词和 ID 稳健但无法理解语义，两者结合兼顾语义与关键词从而提升召回率。"
+    "reference_answer": "混合检索同时执行稠密向量检索和 BM25 稀疏检索，再用 RRF 融合排名；向量检索擅长语义匹配但容易漏关键词，BM25 对专有名词和 ID 稳健但无法理解语义，两者结合兼顾语义与关键词从而提升召回率。",
+    "relevant_sources": ["sample_rag.md"]
   },
   {
     "question": "RAG 里的重排（Reranking）起什么作用？",
-    "reference_answer": "检索阶段为了速度使用轻量方法，召回的 top-k 不精确；重排阶段用 Cross-Encoder 对 query 与每个候选文档联合打分并重新排序，把最相关文档排到前面，常见云端服务有 Jina Reranker 和 Cohere Rerank。"
+    "reference_answer": "检索阶段为了速度使用轻量方法，召回的 top-k 不精确；重排阶段用 Cross-Encoder 对 query 与每个候选文档联合打分并重新排序，把最相关文档排到前面，常见云端服务有 Jina Reranker 和 Cohere Rerank。",
+    "relevant_sources": ["sample_rag.md"]
   },
   {
     "question": "Agentic RAG 的自省循环包含哪些步骤？",
-    "reference_answer": "包含四步：1) Query 改写与分解；2) 多步检索并合并；3) 让 LLM 自省判断上下文是否足够；4) 若不足则生成针对性后续查询再次检索，直到信息充分或达到最大迭代次数。"
+    "reference_answer": "包含四步：1) Query 改写与分解；2) 多步检索并合并；3) 让 LLM 自省判断上下文是否足够；4) 若不足则生成针对性后续查询再次检索，直到信息充分或达到最大迭代次数。",
+    "relevant_sources": ["sample_rag.md"]
   },
   {
     "question": "有哪些常用的 RAG 评测指标？",
-    "reference_answer": "常用指标有 Faithfulness（忠实度，论断是否有上下文依据）、Answer Relevancy（答案相关性，是否切题）、Context Relevance/Precision（上下文相关性，检索内容是否相关），可由 LLM 作为评判者自动打分。"
+    "reference_answer": "常用指标有 Faithfulness（忠实度，论断是否有上下文依据）、Answer Relevancy（答案相关性，是否切题）、Context Relevance/Precision（上下文相关性，检索内容是否相关），可由 LLM 作为评判者自动打分。",
+    "relevant_sources": ["sample_rag.md"]
   }
 ]
