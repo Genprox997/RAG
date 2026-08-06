@@ -10,8 +10,11 @@ faiss-cpu>=1.8.0
 fastembed>=0.3.0
 # Keyword retrieval
 rank_bm25>=0.2.2
-# Optional PDF ingestion
+# Optional PDF ingestion (priority: PyMuPDF > pdfplumber > pypdf; OCR needs paddleocr)
+PyMuPDF>=1.24.0
+pdfplumber>=0.11.0
 pypdf>=4.2.0
+# paddleocr>=2.7.0  # optional, only for scanned-PDF OCR fallback
 # UI
 streamlit>=1.36.0
 # Evaluation
