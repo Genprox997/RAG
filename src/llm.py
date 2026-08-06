@@ -5,7 +5,7 @@ LLM & Embedding clients (OpenAI-compatible).
 - embed(): batch embedding
 """
 import time
-from typing import Iterable, Iterator
+from typing import Iterator
 
 from openai import OpenAI
 

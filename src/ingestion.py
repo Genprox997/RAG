@@ -5,7 +5,6 @@ import datetime
 import json
 import os
 import pickle
-import re
 from dataclasses import dataclass, asdict
 
 import faiss
@@ -82,6 +81,7 @@ def _pdf_text_ocr(path: str) -> str:
         from paddleocr import PaddleOCR
     except Exception:
         return ""
+    import fitz  # PyMuPDF: needed to rasterize pages before OCR
     import numpy as np
 
     ocr = PaddleOCR(use_angle_cls=True, lang="ch")

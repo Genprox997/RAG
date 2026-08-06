@@ -1,8 +1,17 @@
 """
-Offline smoke test: exercises chunking -> hybrid retrieval -> agentic loop ->
+Offline smoke check: exercises chunking -> hybrid retrieval -> agentic loop ->
 generator prompt without any network / cloud API.
 It monkeypatches the LLM embedder & chat with deterministic stubs so the
 entire pipeline can be validated locally.
+
+Run it as a script:  python tests/smoke_check.py
+
+NOTE: this file is deliberately NOT named `smoke_test.py` / `test_smoke.py`.
+It patches `src.llm.embed` / `src.llm.chat` at *module level*, so if pytest
+collected it those stubs would leak into the whole session -- which is exactly
+what happened: `tests/test_p0_improvements.py` then captured a stub as the
+"real" llm.embed and the cache tests broke under `pytest tests/`. Keeping the
+name outside pytest's `test_*.py` / `*_test.py` patterns keeps the suite clean.
 """
 import os
 import sys
@@ -20,7 +29,8 @@ from src.generator import build_messages
 
 
 # ---- deterministic fake embedder (bag-of-tokens, L2-normalized) ----
-def fake_embed(texts):
+def fake_embed(texts, task=None):
+    # `task` mirrors the real llm.embed signature (retrieval.query/passage).
     dim = 64
     out = []
     for t in texts:

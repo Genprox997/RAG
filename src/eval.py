@@ -7,7 +7,6 @@ Three LLM-judged metrics:
 Run over a golden set and print an aggregate report.
 """
 import json
-import os
 from typing import Optional
 
 from src import llm

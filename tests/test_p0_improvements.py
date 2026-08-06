@@ -33,19 +33,25 @@ def _first_text_pdf(root: str = "data/docs"):
 
 # ----------------------------- P0-1: PDF extraction -----------------------------
 def test_pdf_loader_nonempty():
+    import pytest
+
     from src.ingestion import _load_pdf
 
     path = _first_text_pdf()
-    assert path is not None, "no extractable PDF found in data/docs for testing"
+    if path is None:
+        pytest.skip("no local PDF corpus (data/docs is gitignored) - skipped on CI")
     text = _load_pdf(path)
     assert isinstance(text, str) and len(text.strip()) > 0, f"fitz loader returned empty for {path}"
 
 
 def test_pdf_loader_ge_pypdf():
+    import pytest
+
     from src.ingestion import _load_pdf, _pdf_text_pypdf
 
     path = _first_text_pdf()
-    assert path is not None
+    if path is None:
+        pytest.skip("no local PDF corpus (data/docs is gitignored) - skipped on CI")
     fitz_len = len(_load_pdf(path).strip())
     pypdf_len = len(_pdf_text_pypdf(path).strip())
     # PyMuPDF should recover at least as much text as pypdf on a text-based PDF.
@@ -335,7 +341,6 @@ def _make_agent(safe_tmp_path, chat):
 
 
 def test_agent_dynamic_sub_queries_count(monkeypatch, safe_tmp_path):
-    from src.agent import RAGAgent
 
     plan = '{"search_query":"光学设计","sub_queries":["像差校正","MTF评价","CODE V优化","第四个保留","第五个应被截断"]}'
     refl = '{"sufficient":true,"confidence":0.95,"gap":"","next_query":""}'
@@ -606,7 +611,6 @@ def test_llm_chat_is_cached(monkeypatch, safe_tmp_path):
 
 # ------------------- P2-2: phased observability (timing + token stats) ----------
 def test_agent_stats_recorded(safe_tmp_path):
-    from src.agent import RAGAgent
 
     plan = '{"search_query":"q","sub_queries":[]}'
     refl = '{"sufficient":true,"confidence":0.95,"gap":"","next_query":""}'
@@ -640,7 +644,6 @@ def test_retrieve_reports_substep_timings(safe_tmp_path):
 
 
 def test_empty_retrieval_still_reports_stats(safe_tmp_path):
-    from src.agent import RAGAgent
 
     plan = '{"search_query":"q","sub_queries":[]}'
     refl = '{"sufficient":true,"confidence":1.0,"gap":"","next_query":""}'
@@ -657,7 +660,6 @@ def test_empty_retrieval_still_reports_stats(safe_tmp_path):
 
 # ------------------- P2-3: streaming agent trace (UI thought process) ---------
 def test_run_streaming_emits_expected_events(safe_tmp_path):
-    from src.agent import RAGAgent
 
     plan = '{"search_query":"光学设计","sub_queries":["像差","MTF"]}'
     refl = '{"sufficient":true,"confidence":0.95,"gap":"","next_query":""}'
@@ -679,7 +681,6 @@ def test_run_streaming_emits_expected_events(safe_tmp_path):
 
 
 def test_run_streaming_matches_run(safe_tmp_path):
-    from src.agent import RAGAgent
 
     plan = '{"search_query":"q","sub_queries":[]}'
     refl = '{"sufficient":false,"confidence":0.7,"gap":"需要更多","next_query":"补充"}'
@@ -696,5 +697,94 @@ def test_run_streaming_matches_run(safe_tmp_path):
     assert streamed.iterations == direct.iterations
     assert len(streamed.context) == len(direct.context)
     assert len(streamed.trace) == len(direct.trace)
+
+
+# ---------------- P2-4: pure-function unit tests (no network, no index) -------
+def test_chunk_text_single_short():
+    """A short text stays a single chunk and is not mangled."""
+    from src.ingestion import chunk_text
+
+    assert chunk_text("短文本，不需要切分。", max_tokens=400, overlap=80) == ["短文本，不需要切分。"]
+
+
+def test_chunk_text_ignores_blank():
+    from src.ingestion import chunk_text
+
+    assert chunk_text("   \n\n  ", max_tokens=400, overlap=80) == []
+
+
+def test_chunk_text_splits_long_text():
+    """A long text must be split into several chunks, each roughly bounded."""
+    from src.ingestion import chunk_text, count_tokens
+
+    para = "光学系统的像差校正需要综合考虑球差、彗差与场曲。" * 40
+    out = chunk_text(para, max_tokens=60, overlap=0)
+    assert len(out) > 1
+    # with overlap=0 no chunk should wildly exceed the budget
+    assert max(count_tokens(c) for c in out) <= 60 * 3
+
+
+def test_chunk_text_overlap_adds_context():
+    """overlap>0 makes later chunks carry a tail of the previous chunk."""
+    from src.ingestion import chunk_text
+
+    para = "第一段内容。" * 30 + "\n\n" + "第二段内容。" * 30
+    no_ov = chunk_text(para, max_tokens=60, overlap=0)
+    with_ov = chunk_text(para, max_tokens=60, overlap=20)
+    assert len(no_ov) > 1 and len(with_ov) == len(no_ov)
+    # overlapped chunks (except the first) carry extra tail context
+    assert sum(len(c) for c in with_ov) > sum(len(c) for c in no_ov)
+
+
+def test_rrf_rank_monotonic():
+    """Within one ranked list, an earlier rank must score higher."""
+    from src.retrieval import HybridIndex
+
+    fused = HybridIndex._rrf([[(10, 0.9), (11, 0.8), (12, 0.1)]], k=60)
+    assert fused[10] > fused[11] > fused[12]
+
+
+def test_rrf_rewards_agreement_between_retrievers():
+    """A doc found by both retrievers beats a doc found by only one."""
+    from src.retrieval import HybridIndex
+
+    vec = [(1, 0.9), (2, 0.5)]
+    bm = [(1, 3.0), (3, 1.0)]
+    fused = HybridIndex._rrf([vec, bm], k=60)
+    assert fused[1] > fused[2] and fused[1] > fused[3]
+    # doc 1 appears at rank 0 in both lists -> exactly twice the single score
+    assert abs(fused[1] - 2 * (1.0 / 61)) < 1e-9
+
+
+def test_rrf_empty_lists():
+    from src.retrieval import HybridIndex
+
+    assert HybridIndex._rrf([], k=60) == {}
+    assert HybridIndex._rrf([[], []], k=60) == {}
+
+
+def test_tokenize_cjk_bigram():
+    """Chinese text yields unigrams plus adjacent bigrams (jieba-free)."""
+    from src.tokenize import tokenize
+
+    toks = tokenize("混合检索")
+    assert "混" in toks and "检" in toks
+    assert "混合" in toks and "合检" in toks and "检索" in toks
+
+
+def test_tokenize_mixed_language():
+    from src.tokenize import tokenize
+
+    toks = tokenize("MicroLED检测技术 2024")
+    assert "microled" in toks  # lowercased latin word
+    assert "2024" in toks
+    assert "检测" in toks
+
+
+def test_tokenize_empty_and_punctuation():
+    from src.tokenize import tokenize
+
+    assert tokenize("") == []
+    assert tokenize("！！！ ...") == []
 
 

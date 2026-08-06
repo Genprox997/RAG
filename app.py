@@ -16,7 +16,6 @@ from src.retrieval import HybridIndex
 from src.agent import RAGAgent
 from src.generator import (
     generate_stream,
-    build_context_block,
     annotate_invalid_citations,
     ABSTAIN_MESSAGE,
 )

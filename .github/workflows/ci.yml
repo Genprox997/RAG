@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Import smoke check
+        # every module must import cleanly without an .env / API key present
+        env:
+          LLM_API_KEY: dummy-key-for-import-check
+        run: |
+          python -c "import config, src.cache, src.llm, src.tokenize, src.ingestion, src.retrieval, src.rerank, src.agent, src.critic, src.generator, src.eval, src.metrics; print('imports ok')"
+
+      - name: Run tests
+        # No API key and no local corpus on CI: tests are offline by design
+        # (LLM/embedding impls are faked) and corpus-dependent tests self-skip.
+        env:
+          LLM_API_KEY: dummy-key-for-tests
+          ENABLE_CACHE: "false"
+        run: pytest tests/ -q --durations=10
+
+      - name: End-to-end offline smoke check
+        # chunking -> hybrid retrieval -> agentic loop -> generator prompt,
+        # driven by deterministic stubs against the tracked sample corpus.
+        env:
+          LLM_API_KEY: dummy-key-for-smoke
+        run: python tests/smoke_check.py
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Lint (syntax / undefined names / unused imports)
+        run: ruff check . --select E9,F63,F7,F82,F401 --output-format=github
