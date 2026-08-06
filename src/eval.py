@@ -12,7 +12,7 @@ from typing import Optional
 
 from src import llm
 from src.agent import RAGAgent
-from src.generator import generate, build_context_block
+from src.generator import generate, build_context_block, validate_citations, needs_abstain
 from src.retrieval import HybridIndex
 from src.metrics import retrieval_metrics
 from src.critic import critic
@@ -131,6 +131,8 @@ def evaluate_item(
     # answer-level critique (hallucination / omission), separate from the
     # context-level self-reflection in the agent loop
     c = critic(question, answer, res.context)
+    # deterministic citation grounding check (no LLM needed)
+    cit = validate_citations(answer, len(res.context))
     return {
         "question": question,
         "answer": answer,
@@ -142,6 +144,9 @@ def evaluate_item(
         "critic_hallucinated": c.hallucinated,
         "critic_missing": c.missing,
         "critic_issues": c.issues,
+        "citation_valid": cit["valid"],
+        "citation_invalid": cit["invalid"],
+        "abstained": needs_abstain(answer, len(res.context)),
         "n_iterations": res.iterations,
         "n_chunks": len(res.context),
     }
@@ -170,6 +175,12 @@ def run_evaluation(golden_path: str = "evaluation/golden_set.json", index_dir: O
     # fraction of answers the answer-level critic judged faithful
     faithful_rows = [r for r in rows if r.get("critic_faithful")]
     agg["critic_faithful_rate"] = round(len(faithful_rows) / n, 3)
+    # deterministic citation grounding: % answers with all citations in range,
+    # and % that deterministically abstained (no grounding)
+    agg["citation_valid_rate"] = round(
+        sum(1 for r in rows if r.get("citation_valid")) / n, 3
+    )
+    agg["abstain_rate"] = round(sum(1 for r in rows if r.get("abstained")) / n, 3)
     agg_retrieval = {
         k: round(sum(v) / len(v), 3) for k, v in retr_accum.items()
     }

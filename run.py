@@ -14,7 +14,7 @@ import config
 from src.ingestion import ingest
 from src.retrieval import HybridIndex
 from src.agent import RAGAgent
-from src.generator import generate
+from src.generator import safe_answer
 
 
 def main():
@@ -29,9 +29,11 @@ def main():
     idx = HybridIndex()
     agent = RAGAgent(idx)
     res = agent.run(question)
-    answer = generate(question, res.context)
+    answer = safe_answer(question, res.context)
     print("\n=== 回答 ===")
     print(answer)
+    if not res.context:
+        print("[info] 未检索到任何上下文，已确定性 abstain。")
     print("\n=== 检索轨迹 ===")
     for step in res.trace:
         print(f"Step {step.iteration}: {step.query}")

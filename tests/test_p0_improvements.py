@@ -450,4 +450,52 @@ def test_eval_includes_critic_fields(monkeypatch, tmp_path):
     assert "retrieval" in row and "recall@1" in row["retrieval"]
 
 
+# ------------------- P1-4: citation validation + deterministic abstain ---------
+def test_validate_citations_flags_out_of_range():
+    from src.generator import validate_citations
+
+    v = validate_citations("根据[1]与[5]可知结论。", n_chunks=3)
+    assert v["has_citation"] is True
+    assert v["invalid"] == [5]
+    assert v["valid"] is False
+    # all-in-range answer is valid
+    ok = validate_citations("见[1]与[2]。", n_chunks=3)
+    assert ok["valid"] is True and ok["invalid"] == []
+
+
+def test_needs_abstain_cases():
+    from src.generator import needs_abstain, validate_citations
+
+    # empty context -> must abstain
+    assert needs_abstain("任何内容", n_chunks=0) is True
+    # no citation at all with non-empty context -> abstain
+    assert needs_abstain("光学系统用MTF评价。", n_chunks=2) is True
+    # valid citation present -> do not abstain
+    assert needs_abstain("MTF评价成像质量[1]。", n_chunks=2) is False
+    # out-of-range citation still counts as "has citation" (not abstain, but invalid)
+    assert validate_citations("结论[9]。", n_chunks=2)["has_citation"] is True
+
+
+def test_safe_answer_abstains_and_annotates(monkeypatch):
+    import src.generator as G
+
+    # case A: model returns an uncited answer -> deterministic abstain
+    monkeypatch.setattr(G, "generate", lambda q, ctx: "光学系统用MTF评价成像质量。")
+    abstained = G.safe_answer("什么是MTF", [object()])
+    assert abstained == G.ABSTAIN_MESSAGE
+
+    # case B: valid citation -> returned as-is
+    monkeypatch.setattr(G, "generate", lambda q, ctx: "MTF评价成像质量[1]。")
+    cited = G.safe_answer("什么是MTF", [object()])
+    assert cited == "MTF评价成像质量[1]。"
+
+    # case C: out-of-range citation -> warning annotated, not abstained
+    monkeypatch.setattr(G, "generate", lambda q, ctx: "结论[9]。")
+    annotated = G.safe_answer("结论是什么", [object()])
+    assert "[9]" in annotated and "超出上下文范围" in annotated
+
+    # case D: empty context -> abstain even if generate would say something
+    monkeypatch.setattr(G, "generate", lambda q, ctx: "凭空编造[1]。")
+    assert G.safe_answer("x", []) == G.ABSTAIN_MESSAGE
+
 

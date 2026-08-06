@@ -14,7 +14,12 @@ import config
 from src.ingestion import ingest
 from src.retrieval import HybridIndex
 from src.agent import RAGAgent
-from src.generator import generate_stream, build_context_block
+from src.generator import (
+    generate_stream,
+    build_context_block,
+    annotate_invalid_citations,
+    ABSTAIN_MESSAGE,
+)
 
 st.set_page_config(page_title="Agentic RAG", page_icon="🧠", layout="wide")
 s = config.get_settings()
@@ -78,7 +83,21 @@ if st.button("🚀 提问", disabled=not question):
 
     # answer (streaming)
     st.subheader("💬 回答")
-    st.write_stream(generate_stream(question, result.context))
+    if not result.context:
+        st.info(ABSTAIN_MESSAGE)
+    else:
+        # buffer the stream so we can annotate any out-of-range citations
+        _buf = []
+
+        def _gen():
+            for tok in generate_stream(question, result.context):
+                _buf.append(tok)
+                yield tok
+
+        st.write_stream(_gen())
+        annotated = annotate_invalid_citations("".join(_buf), len(result.context))
+        if annotated != "".join(_buf):
+            st.caption(annotated.split("\n", 1)[1] if "\n" in annotated else annotated)
 
     # sources
     st.subheader("📚 引用来源")

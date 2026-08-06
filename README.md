@@ -97,6 +97,7 @@ python -m src.eval
 - **LLM-judged**（均 0–1）：Faithfulness / Answer Relevancy / Context Relevance。
 - **答案级 Critic**（`src/critic.py`）：对最终答案二次校验——检测**幻觉**（答案中无上下文支撑的断言/数字）与**漏引**（上下文有但答案遗漏的关键事实）；LLM 不可用时 `detect_unsupported_numbers` 仍做确定性数字校验。聚合输出 `critic_faithful_rate`。
 - **检索级（确定性、可复现）**：recall@k / MRR / hit_rate —— 由 golden 项的 `relevant_sources` 与按秩返回的 source 列表计算，衡量检索本身的质量（需 golden 标注相关来源）。
+- **引用可信校验（确定性，无需 LLM）**：`generator.validate_citations` 检查答案中每个 `[n]` 是否落在 `[1..n_chunks]` 内，越界引用被标注为「模型臆造」；`needs_abstain` 在上下文为空或答案无任何有效引用时**确定性 abstain**（明确说无法回答），而非依赖模型自觉。评测聚合输出 `citation_valid_rate` / `abstain_rate`，用户入口（run.py / app.py）默认走 `safe_answer` 安全生成。
 
 ---
 
