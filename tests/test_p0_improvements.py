@@ -9,6 +9,14 @@ import glob
 import json
 import os
 
+# Capture the genuine llm functions at import time so cache tests can restore
+# them even if an upstream test leaked a patched LLM.chat / LLM.embed.
+import src.llm as _LLM_MODULE
+
+_REAL_EMBED = _LLM_MODULE.embed
+_REAL_CHAT = _LLM_MODULE.chat
+
+
 
 def _first_text_pdf(root: str = "data/docs"):
     """Return a path to a PDF under root whose pypdf extraction is non-trivial."""
@@ -497,5 +505,102 @@ def test_safe_answer_abstains_and_annotates(monkeypatch):
     # case D: empty context -> abstain even if generate would say something
     monkeypatch.setattr(G, "generate", lambda q, ctx: "凭空编造[1]。")
     assert G.safe_answer("x", []) == G.ABSTAIN_MESSAGE
+
+
+# ------------------- P2-1: local response cache (embeddings + LLM) -------------------
+def test_cache_roundtrip(tmp_path):
+    from src.cache import ResponseCache
+
+    c = ResponseCache(cache_dir=str(tmp_path), enabled=True)
+    assert c.get("embed", (["a"],)) is None
+    c.set("embed", (["a"],), [[0.1, 0.2]])
+    assert c.get("embed", (["a"],)) == [[0.1, 0.2]]
+
+
+def test_cache_miss_then_hit_counts_compute(tmp_path):
+    from src.cache import ResponseCache
+
+    c = ResponseCache(cache_dir=str(tmp_path), enabled=True)
+    calls = {"n": 0}
+
+    def compute():
+        calls["n"] += 1
+        return "result"
+
+    assert c.cached("chat", ("same-prompt",), compute) == "result"
+    assert c.cached("chat", ("same-prompt",), compute) == "result"
+    assert calls["n"] == 1, "second call must hit cache, not recompute"
+    # different key -> recompute
+    assert c.cached("chat", ("other-prompt",), compute) == "result"
+    assert calls["n"] == 2
+
+
+def test_cache_disabled_never_stores(tmp_path):
+    from src.cache import ResponseCache
+
+    c = ResponseCache(cache_dir=str(tmp_path), enabled=False)
+    calls = {"n": 0}
+
+    def compute():
+        calls["n"] += 1
+        return "x"
+
+    assert c.cached("chat", ("k",), compute) == "x"
+    assert c.cached("chat", ("k",), compute) == "x"
+    assert calls["n"] == 2, "disabled cache must always recompute"
+    assert c.get("chat", ("k",)) is None
+
+
+def test_llm_embed_is_cached(monkeypatch, tmp_path):
+    import src.llm as LLM
+    from src.cache import ResponseCache
+
+    # neutralize any leaked LLM.chat/embed from upstream tests, then isolate cache
+    monkeypatch.setattr(LLM, "embed", _REAL_EMBED)
+    monkeypatch.setattr(LLM, "chat", _REAL_CHAT)
+    cache = ResponseCache(cache_dir=str(tmp_path), enabled=True)
+    monkeypatch.setattr(LLM, "default_cache", lambda: cache)
+
+    calls = {"n": 0}
+
+    def fake_embed_impl(texts, task=None):
+        calls["n"] += 1
+        return [[0.0] * 4 for _ in texts]
+
+    monkeypatch.setattr(LLM, "_embed_impl", fake_embed_impl)
+    texts = ["混合检索", "向量检索"]
+    # two identical cached calls -> only one underlying embed
+    LLM.embed(texts, task="retrieval.passage")
+    LLM.embed(texts, task="retrieval.passage")
+    assert calls["n"] == 1, "repeated identical embed must hit cache"
+    # _cache=False bypasses cache
+    LLM.embed(texts, task="retrieval.passage", _cache=False)
+    assert calls["n"] == 2
+
+
+def test_llm_chat_is_cached(monkeypatch, tmp_path):
+    import src.llm as LLM
+    from src.cache import ResponseCache
+
+    # neutralize any leaked LLM.chat/embed from upstream tests, then isolate cache
+    monkeypatch.setattr(LLM, "embed", _REAL_EMBED)
+    monkeypatch.setattr(LLM, "chat", _REAL_CHAT)
+    cache = ResponseCache(cache_dir=str(tmp_path), enabled=True)
+    monkeypatch.setattr(LLM, "default_cache", lambda: cache)
+
+    calls = {"n": 0}
+
+    def fake_chat_impl(messages, *, temperature=0.0, max_tokens=None, json_mode=False):
+        calls["n"] += 1
+        return "answer"
+
+    monkeypatch.setattr(LLM, "_chat_impl", fake_chat_impl)
+    msgs = [{"role": "user", "content": "hi"}]
+    LLM.chat(msgs, json_mode=True)
+    LLM.chat(msgs, json_mode=True)
+    assert calls["n"] == 1, "repeated identical chat must hit cache"
+    # different json_mode -> different key -> recompute
+    LLM.chat(msgs, json_mode=False)
+    assert calls["n"] == 2
 
 

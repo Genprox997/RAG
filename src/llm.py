@@ -10,20 +10,20 @@ from typing import Iterable, Iterator
 from openai import OpenAI
 
 import config
+from src.cache import default_cache
 
 
 def _client(base_url: str, api_key: str) -> OpenAI:
     return OpenAI(base_url=base_url, api_key=api_key)
 
 
-def chat(
+def _chat_impl(
     messages: list[dict],
     *,
     temperature: float = 0.0,
     max_tokens: int | None = None,
     json_mode: bool = False,
 ) -> str:
-    """Non-streaming chat completion. Returns the assistant message content."""
     s = config.get_settings()
     client = _client(s.llm_base_url, s.llm_api_key)
     kwargs = {
@@ -37,6 +37,33 @@ def chat(
         kwargs["response_format"] = {"type": "json_object"}
     resp = client.chat.completions.create(**kwargs)
     return resp.choices[0].message.content or ""
+
+
+def chat(
+    messages: list[dict],
+    *,
+    temperature: float = 0.0,
+    max_tokens: int | None = None,
+    json_mode: bool = False,
+    _cache: bool = True,
+) -> str:
+    """Non-streaming chat completion. Returns the assistant message content.
+
+    Results are cached by (messages, model, temperature, max_tokens, json_mode)
+    when ENABLE_CACHE is on, so repeated identical prompts skip the API call.
+    """
+    s = config.get_settings()
+    if _cache:
+        return default_cache().cached(
+            "chat",
+            (messages, s.llm_model, temperature, max_tokens, json_mode),
+            lambda: _chat_impl(
+                messages, temperature=temperature, max_tokens=max_tokens, json_mode=json_mode
+            ),
+        )
+    return _chat_impl(
+        messages, temperature=temperature, max_tokens=max_tokens, json_mode=json_mode
+    )
 
 
 def stream_chat(
@@ -76,15 +103,8 @@ def _local_embedder():
     return _LOCAL_MODEL
 
 
-def embed(texts: list[str], task: str | None = None) -> list[list[float]]:
-    """Batch embedding.
-
-    - provider == 'local'  -> offline fastembed model (no API, no cost)
-    - provider == 'cloud'  -> OpenAI-compatible embeddings endpoint
-
-    `task` is only used by the local backend (e.g. bge needs
-    'retrieval.query' vs 'retrieval.passage' to add the right prefix).
-    """
+def _embed_impl(texts: list[str], task: str | None = None) -> list[list[float]]:
+    """Actual embedding call (no caching)."""
     s = config.get_settings()
     # API / model may reject empty strings
     texts = [t if t.strip() else " " for t in texts]
@@ -106,3 +126,25 @@ def embed(texts: list[str], task: str | None = None) -> list[list[float]]:
         out.extend([d.embedding for d in resp.data])
         time.sleep(0.05)
     return out
+
+
+def embed(texts: list[str], task: str | None = None, _cache: bool = True) -> list[list[float]]:
+    """Batch embedding.
+
+    - provider == 'local'  -> offline fastembed model (no API, no cost)
+    - provider == 'cloud'  -> OpenAI-compatible embeddings endpoint
+
+    `task` is only used by the local backend (e.g. bge needs
+    'retrieval.query' vs 'retrieval.passage' to add the right prefix).
+
+    Results are cached by (texts, provider, model, task) when ENABLE_CACHE is on,
+    so re-ingestion / repeated queries skip the (potentially costly) embedding call.
+    """
+    s = config.get_settings()
+    if _cache:
+        return default_cache().cached(
+            "embed",
+            (tuple(texts), s.embed_provider, s.embed_model, task),
+            lambda: _embed_impl(texts, task),
+        )
+    return _embed_impl(texts, task)

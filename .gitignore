@@ -25,6 +25,10 @@ data/docs/*
 !data/docs/sample_rag.md
 # 运行时生成的索引（FAISS + BM25 + chunks）
 data/index/
+# 本地响应缓存（embedding / LLM 命中缓存）
+data/cache/
+# pytest 自定义 basetemp（CI/本地，避免触发临时目录清理钩子）
+.pytest_tmp/
 
 # ===== Local tooling / memory =====
 .workbuddy/

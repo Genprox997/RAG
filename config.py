@@ -59,6 +59,12 @@ class Settings:
     index_dir: str = _get("INDEX_DIR", "data/index")
     docs_dir: str = _get("DOCS_DIR", "data/docs")
 
+    # ---- Cache (cost / latency) ----
+    # file backend is zero-dependency; diskcache used only if installed + selected
+    cache_dir: str = _get("CACHE_DIR", "data/cache")
+    enable_cache: bool = _get("ENABLE_CACHE", "true").lower() in ("1", "true", "yes", "on")
+    cache_backend: str = _get("CACHE_BACKEND", "file")  # file | diskcache
+
 
 _settings: Settings | None = None
 

@@ -74,6 +74,8 @@ python run.py "Agentic RAG 的自省循环包含哪些步骤？"
 streamlit run app.py
 ```
 
+**缓存（降本提速，离线可用）**：`src/cache.py` 对 embedding 与 LLM 补全按内容哈希做本地缓存，默认走零依赖的文件缓存（`data/cache/`），若安装 `diskcache` 可设 `CACHE_BACKEND=diskcache` 提速。重复查询 / 重新入库会自动命中缓存，跳过昂贵调用。可用 `ENABLE_CACHE=false` 关闭。
+
 可选：开启重排：
 - **云端**：在 `.env` 设置 `RERANK_PROVIDER=jina`（或 `cohere`）并填入 `RERANK_API_KEY`。
 - **本地离线（推荐，全离线、零额外下载）**：设置 `RERANK_PROVIDER=local`，默认用已缓存的 bge 编码器对候选做 query-doc 余弦重排（`LOCAL_RERANKER=embedding`）；若已安装 `sentence_transformers`，可设 `LOCAL_RERANKER=cross-encoder` 启用 `bge-reranker-v2-m3` 真·交叉编码器（不可用时自动回退到 embedding 后端）。
@@ -118,6 +120,7 @@ python -m src.eval
 │   ├── rerank.py          # 本地离线重排器（embedding / cross-encoder 后端）
 │   ├── agent.py           # Agentic 自省循环
 │   ├── generator.py       # 带引用的生成
+│   ├── cache.py           # 本地响应缓存（embedding / LLM，离线零依赖）
 │   └── eval.py            # RAGAS 式评测
 ├── data/
 │   ├── docs/              # 待检索文档（含样例）
