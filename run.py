@@ -42,6 +42,18 @@ def main():
             print(f"  自省: {step.reflection}")
     print(f"\n最终使用 {len(res.context)} 个块，迭代 {res.iterations} 轮。")
 
+    # ---- observability: per-phase latency + token estimates ----
+    st = getattr(res, "stats", {})
+    if st:
+        print("\n=== 分阶段耗时 / 统计 ===")
+        print(f"  规划(plan):   {st.get('plan_ms', 0):.1f} ms")
+        print(f"  检索(retrieve): {st.get('retrieve_ms', 0):.1f} ms")
+        print(f"  重排(rerank):  {st.get('rerank_ms', 0):.1f} ms")
+        print(f"  自省(reflect): {st.get('reflect_ms', 0):.1f} ms")
+        print(f"  总计(total):   {st.get('total_ms', 0):.1f} ms")
+        print(f"  LLM 调用: {st.get('llm_calls', 0)} 次")
+        print(f"  Token 估算: prompt≈{st.get('prompt_tokens', 0)}, completion≈{st.get('completion_tokens', 0)}")
+
 
 if __name__ == "__main__":
     main()

@@ -76,6 +76,8 @@ streamlit run app.py
 
 **缓存（降本提速，离线可用）**：`src/cache.py` 对 embedding 与 LLM 补全按内容哈希做本地缓存，默认走零依赖的文件缓存（`data/cache/`），若安装 `diskcache` 可设 `CACHE_BACKEND=diskcache` 提速。重复查询 / 重新入库会自动命中缓存，跳过昂贵调用。可用 `ENABLE_CACHE=false` 关闭。
 
+**分阶段可观测**：`AgentResult.stats` 记录各阶段耗时（plan / retrieve / rerank / reflect / total，单位 ms）与 LLM 调用次数、prompt/completion token 估算（tiktoken，含回退）；`HybridIndex.timings` 记录单次检索内 vector / bm25 / rrf / rerank 子阶段耗时。`run.py` 会打印这些指标，便于定位瓶颈、写进简历「优化点」。
+
 可选：开启重排：
 - **云端**：在 `.env` 设置 `RERANK_PROVIDER=jina`（或 `cohere`）并填入 `RERANK_API_KEY`。
 - **本地离线（推荐，全离线、零额外下载）**：设置 `RERANK_PROVIDER=local`，默认用已缓存的 bge 编码器对候选做 query-doc 余弦重排（`LOCAL_RERANKER=embedding`）；若已安装 `sentence_transformers`，可设 `LOCAL_RERANKER=cross-encoder` 启用 `bge-reranker-v2-m3` 真·交叉编码器（不可用时自动回退到 embedding 后端）。

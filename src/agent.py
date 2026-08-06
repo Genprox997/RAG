@@ -7,9 +7,11 @@ Agentic RAG loop:
 Outputs the accumulated context plus an observable retrieval trace.
 """
 import json
+import time
 from dataclasses import dataclass, field
 
 from src import llm
+from src.ingestion import count_tokens
 from src.retrieval import HybridIndex, Hit
 
 PLAN_PROMPT = """You are a retrieval planner for a RAG system.
@@ -55,6 +57,7 @@ class AgentResult:
     trace: list[TraceStep] = field(default_factory=list)
     iterations: int = 0
     empty_retrieval: bool = False
+    stats: dict = field(default_factory=dict)  # per-phase latency (ms) + token estimates
 
 
 def _parse_json(text: str) -> dict:
@@ -87,6 +90,43 @@ class RAGAgent:
     def __init__(self, index: HybridIndex):
         self.index = index
 
+    def _new_stats(self) -> dict:
+        return {
+            "plan_ms": 0.0,
+            "retrieve_ms": 0.0,
+            "reflect_ms": 0.0,
+            "rerank_ms": 0.0,
+            "total_ms": 0.0,
+            "llm_calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "retrieved_total": 0,
+        }
+
+    def _llm_call(self, prompt: str, *, json_mode: bool = False, phase: str = "reflect") -> str:
+        """Centralized LLM call: time it, estimate tokens, count calls."""
+        s = self._stats
+        s["llm_calls"] += 1
+        s["prompt_tokens"] += count_tokens(prompt)
+        t0 = time.perf_counter()
+        text = llm.chat([{"role": "user", "content": prompt}], json_mode=json_mode)
+        dt = (time.perf_counter() - t0) * 1000
+        if phase == "plan":
+            s["plan_ms"] += dt
+        else:
+            s["reflect_ms"] += dt
+        s["completion_tokens"] += count_tokens(text or "")
+        return text
+
+    def _timed_retrieve(self, q: str) -> list[Hit]:
+        s = self._stats
+        t0 = time.perf_counter()
+        hits = self.index.retrieve(q)
+        s["retrieve_ms"] += (time.perf_counter() - t0) * 1000
+        # fold in per-call rerank timing reported by HybridIndex
+        s["rerank_ms"] += self.index.timings.get("rerank_ms", 0.0)
+        return hits
+
     def _dedup_merge(self, acc: dict[int, Hit], hits: list[Hit]):
         for h in hits:
             if h.chunk_id in acc:
@@ -98,7 +138,7 @@ class RAGAgent:
         prompt = REFLECT_PROMPT.replace("{context}", context_text).replace("{question}", question)
         if strict:
             prompt += "\n\n[System] Output STRICT JSON only, no markdown fences, no extra prose."
-        return llm.chat([{"role": "user", "content": prompt}], json_mode=True)
+        return self._llm_call(prompt, json_mode=True, phase="reflect")
 
     def _parse_reflection(self, text: str) -> dict | None:
         """Parse a reflection verdict, or None if it cannot be parsed."""
@@ -120,10 +160,12 @@ class RAGAgent:
 
     def run(self, question: str) -> AgentResult:
         s = self.index.s
+        self._stats = self._new_stats()
+        run_t0 = time.perf_counter()
+
         # 1) plan
-        plan_txt = llm.chat(
-            [{"role": "user", "content": PLAN_PROMPT.replace("{question}", question)}],
-            json_mode=True,
+        plan_txt = self._llm_call(
+            PLAN_PROMPT.replace("{question}", question), json_mode=True, phase="plan"
         )
         try:
             plan = _parse_json(plan_txt)
@@ -139,7 +181,8 @@ class RAGAgent:
         # 2) initial retrieval (main + sub queries)
         all_queries = [search_query] + sub_queries
         for q in all_queries:
-            self._dedup_merge(acc, self.index.retrieve(q))
+            self._dedup_merge(acc, self._timed_retrieve(q))
+        self._stats["retrieved_total"] = len(acc)
         trace.append(
             TraceStep(
                 iteration=0,
@@ -152,7 +195,11 @@ class RAGAgent:
         # graceful degradation: nothing retrieved at all
         if not acc:
             trace[-1].reflection = "no chunks retrieved"
-            return AgentResult(context=[], trace=trace, iterations=0, empty_retrieval=True)
+            self._stats["total_ms"] = round((time.perf_counter() - run_t0) * 1000, 3)
+            return AgentResult(
+                context=[], trace=trace, iterations=0, empty_retrieval=True,
+                stats=dict(self._stats),
+            )
 
         # 3) self-reflection loop
         iterations = 0
@@ -192,7 +239,8 @@ class RAGAgent:
                 break
 
             # 4) targeted re-retrieval
-            self._dedup_merge(acc, self.index.retrieve(next_query))
+            self._dedup_merge(acc, self._timed_retrieve(next_query))
+            self._stats["retrieved_total"] = len(acc)
             n_now = len(acc)
             empty_streak = empty_streak + 1 if n_now == prev_n else 0
             prev_n = n_now
@@ -210,4 +258,7 @@ class RAGAgent:
                 break
 
         final = sorted(acc.values(), key=lambda x: -x.score)[: s.top_k_final]
-        return AgentResult(context=final, trace=trace, iterations=iterations)
+        self._stats["total_ms"] = round((time.perf_counter() - run_t0) * 1000, 3)
+        return AgentResult(
+            context=final, trace=trace, iterations=iterations, stats=dict(self._stats)
+        )

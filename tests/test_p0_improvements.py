@@ -604,3 +604,54 @@ def test_llm_chat_is_cached(monkeypatch, tmp_path):
     assert calls["n"] == 2
 
 
+# ------------------- P2-2: phased observability (timing + token stats) ----------
+def test_agent_stats_recorded(tmp_path):
+    from src.agent import RAGAgent
+
+    plan = '{"search_query":"q","sub_queries":[]}'
+    refl = '{"sufficient":true,"confidence":0.95,"gap":"","next_query":""}'
+    chat = _ScriptedChat([plan, refl])
+    agent, _ = _make_agent(tmp_path, chat)
+    res = agent.run("某问题")
+    st = res.stats
+    assert set(["plan_ms", "retrieve_ms", "rerank_ms", "reflect_ms", "total_ms",
+                "llm_calls", "prompt_tokens", "completion_tokens", "retrieved_total"]) <= set(st)
+    # plan + 1 reflection = 2 LLM calls
+    assert st["llm_calls"] == 2, st
+    assert st["prompt_tokens"] > 0, "prompt tokens should be estimated"
+    assert st["completion_tokens"] > 0, "completion tokens should be estimated"
+    assert st["total_ms"] >= 0 and st["plan_ms"] >= 0 and st["retrieve_ms"] >= 0
+    assert st["retrieved_total"] == len(res.context)
+
+
+def test_retrieve_reports_substep_timings(tmp_path):
+    import src.retrieval as R
+    from src.retrieval import HybridIndex
+
+    _write_synthetic_index(str(tmp_path), dim=8, provider="local")
+    R.llm.embed = lambda texts, task=None: [[1.0] * 8 for _ in texts]
+    hi = HybridIndex(str(tmp_path))
+    hi.retrieve("q")
+    assert "vector_ms" in hi.timings and "bm25_ms" in hi.timings
+    assert "rrf_ms" in hi.timings and "rerank_ms" in hi.timings
+    # all sub-steps recorded as non-negative numbers
+    for v in hi.timings.values():
+        assert isinstance(v, (int, float)) and v >= 0
+
+
+def test_empty_retrieval_still_reports_stats(tmp_path):
+    from src.agent import RAGAgent
+
+    plan = '{"search_query":"q","sub_queries":[]}'
+    refl = '{"sufficient":true,"confidence":1.0,"gap":"","next_query":""}'
+    chat = _ScriptedChat([plan, refl])
+    agent, _ = _make_agent(tmp_path, chat)
+    # force every retrieve to return nothing -> early graceful degradation
+    agent.index.retrieve = lambda q, **kw: []
+    res = agent.run("任何问题")
+    assert res.empty_retrieval is True
+    st = res.stats
+    assert st["llm_calls"] == 1, "only the plan call happened"
+    assert st["total_ms"] >= 0 and st["plan_ms"] >= 0
+
+

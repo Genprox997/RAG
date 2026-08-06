@@ -5,6 +5,7 @@ cross-encoder (Jina / Cohere).
 """
 import json
 import os
+import time
 import urllib.request
 from dataclasses import dataclass
 
@@ -40,6 +41,8 @@ class HybridIndex:
         self.s = s
         self.meta = self._load_meta()
         self._validate()
+        # per-call observability: last retrieve()'s sub-step timings (ms)
+        self.timings: dict = {}
 
     def _load_meta(self) -> dict | None:
         path = os.path.join(self.index_dir, "index_meta.json")
@@ -110,9 +113,13 @@ class HybridIndex:
 
     def retrieve(self, query: str, top_k_final: int | None = None) -> list[Hit]:
         top_k_final = top_k_final or self.s.top_k_final
+        t0 = time.perf_counter()
         vec = self._vector_search(query, self.s.top_k_vector)
+        t1 = time.perf_counter()
         bm = self._bm25_search(query, self.s.top_k_bm25)
+        t2 = time.perf_counter()
         fused = self._rrf([vec, bm], self.s.rrf_k)
+        t3 = time.perf_counter()
 
         # carry individual scores for transparency
         vec_scores = {cid: sc for cid, sc in vec}
@@ -126,6 +133,15 @@ class HybridIndex:
             candidates = self._local_rerank(query, candidates)
         elif self.s.rerank_provider in ("jina", "cohere") and self.s.rerank_api_key:
             candidates = self._rerank(query, candidates)
+        t4 = time.perf_counter()
+
+        # record sub-step timings for observability (ms)
+        self.timings = {
+            "vector_ms": round((t1 - t0) * 1000, 3),
+            "bm25_ms": round((t2 - t1) * 1000, 3),
+            "rrf_ms": round((t3 - t2) * 1000, 3),
+            "rerank_ms": round((t4 - t3) * 1000, 3),
+        }
 
         hits: list[Hit] = []
         for cid, sc in candidates[:top_k_final]:
