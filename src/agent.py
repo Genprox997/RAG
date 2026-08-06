@@ -158,7 +158,17 @@ class RAGAgent:
             "next_query": str(v.get("next_query", "") or ""),
         }
 
-    def run(self, question: str) -> AgentResult:
+    def run_streaming(self, question: str):
+        """Yield agent progress events so a UI can render the thinking live.
+
+        Emits dicts:
+          {"type": "plan", "search_query": str, "sub_queries": [str]}
+          {"type": "retrieve", "iteration": int, "query": str,
+           "n_retrieved": int, "top_sources": [str]}
+          {"type": "reflect", "iteration": int, "reflection": str,
+           "confidence": float|None, "next_query": str}
+          {"type": "done", "result": AgentResult}
+        """
         s = self.index.s
         self._stats = self._new_stats()
         run_t0 = time.perf_counter()
@@ -174,6 +184,11 @@ class RAGAgent:
         search_query = plan.get("search_query") or question
         # LLM decides the number of sub-queries; cap for safety (was hard-coded <=2)
         sub_queries = (plan.get("sub_queries", []) or [])[: s.max_sub_queries]
+        yield {
+            "type": "plan",
+            "search_query": search_query,
+            "sub_queries": sub_queries,
+        }
 
         acc: dict[int, Hit] = {}
         trace: list[TraceStep] = []
@@ -191,15 +206,26 @@ class RAGAgent:
                 top_sources=[h.source for h in sorted(acc.values(), key=lambda x: -x.score)[:3]],
             )
         )
+        yield {
+            "type": "retrieve",
+            "iteration": 0,
+            "query": " | ".join(all_queries),
+            "n_retrieved": len(acc),
+            "top_sources": [h.source for h in sorted(acc.values(), key=lambda x: -x.score)[:3]],
+        }
 
         # graceful degradation: nothing retrieved at all
         if not acc:
             trace[-1].reflection = "no chunks retrieved"
             self._stats["total_ms"] = round((time.perf_counter() - run_t0) * 1000, 3)
-            return AgentResult(
-                context=[], trace=trace, iterations=0, empty_retrieval=True,
-                stats=dict(self._stats),
-            )
+            yield {
+                "type": "done",
+                "result": AgentResult(
+                    context=[], trace=trace, iterations=0, empty_retrieval=True,
+                    stats=dict(self._stats),
+                ),
+            }
+            return
 
         # 3) self-reflection loop
         iterations = 0
@@ -234,6 +260,14 @@ class RAGAgent:
             last.next_query = next_query
             last.confidence = confidence
 
+            yield {
+                "type": "reflect",
+                "iteration": it,
+                "reflection": tag,
+                "confidence": confidence,
+                "next_query": next_query,
+            }
+
             # stop when: explicitly sufficient, OR confident enough, OR no follow-up
             if sufficient or confidence >= s.reflect_confidence_threshold or not next_query:
                 break
@@ -252,6 +286,13 @@ class RAGAgent:
                     top_sources=[h.source for h in sorted(acc.values(), key=lambda x: -x.score)[:3]],
                 )
             )
+            yield {
+                "type": "retrieve",
+                "iteration": it,
+                "query": next_query,
+                "n_retrieved": n_now,
+                "top_sources": [h.source for h in sorted(acc.values(), key=lambda x: -x.score)[:3]],
+            }
             # two consecutive retrievals returned nothing new -> stop gracefully
             if empty_streak >= 2:
                 trace[-1].reflection = "no new chunks; stopping"
@@ -259,6 +300,17 @@ class RAGAgent:
 
         final = sorted(acc.values(), key=lambda x: -x.score)[: s.top_k_final]
         self._stats["total_ms"] = round((time.perf_counter() - run_t0) * 1000, 3)
-        return AgentResult(
-            context=final, trace=trace, iterations=iterations, stats=dict(self._stats)
-        )
+        yield {
+            "type": "done",
+            "result": AgentResult(
+                context=final, trace=trace, iterations=iterations, stats=dict(self._stats)
+            ),
+        }
+
+    def run(self, question: str) -> AgentResult:
+        """Synchronous convenience wrapper around run_streaming()."""
+        final = None
+        for ev in self.run_streaming(question):
+            if ev["type"] == "done":
+                final = ev["result"]
+        return final

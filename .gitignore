@@ -29,6 +29,8 @@ data/index/
 data/cache/
 # pytest 自定义 basetemp（CI/本地，避免触发临时目录清理钩子）
 .pytest_tmp/
+# pytest 安全临时目录（conftest.safe_tmp_path，只创建不删除）
+.pytest_local/
 
 # ===== Local tooling / memory =====
 .workbuddy/

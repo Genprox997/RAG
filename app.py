@@ -78,7 +78,33 @@ agent = RAGAgent(idx)
 question = st.text_input("❓ 输入你的问题", placeholder="例如：Agentic RAG 的自省循环包含哪些步骤？")
 
 if st.button("🚀 提问", disabled=not question):
+    # ---- stream the agent's thinking process live ----
+    st.subheader("🧠 思考过程 (Agent Trace)")
+    think_box = st.empty()
+    lines: list[str] = []
+
+    def _push(line: str):
+        lines.append(line)
+        think_box.markdown("\n".join(f"- {l}" for l in lines))
+
+    result = None
     with st.spinner("Agent 检索中..."):
+        for ev in agent.run_streaming(question):
+            if ev["type"] == "plan":
+                subs = "、".join(ev["sub_queries"]) if ev["sub_queries"] else "（无）"
+                _push(f"📝 规划检索策略：`{ev['search_query']}` · 子查询：{subs}")
+            elif ev["type"] == "retrieve":
+                _push(
+                    f"🔎 第 {ev['iteration']} 轮检索 `{ev['query']}` → "
+                    f"命中 {ev['n_retrieved']} 块（top: {', '.join(ev['top_sources'])}）"
+                )
+            elif ev["type"] == "reflect":
+                _push(f"🤔 自省：{ev['reflection']}")
+                if ev["next_query"]:
+                    _push(f"➡️ 补充查询：`{ev['next_query']}`")
+            elif ev["type"] == "done":
+                result = ev["result"]
+    if result is None:  # should not happen, but be safe
         result = agent.run(question)
 
     # answer (streaming)
@@ -105,8 +131,8 @@ if st.button("🚀 提问", disabled=not question):
         with st.expander(f"[{i}] {h.source}  (score={h.score:.3f}, bm25={h.bm25_score}, vec={h.vector_score})"):
             st.write(h.text)
 
-    # trace
-    with st.expander("🔍 检索轨迹 (Agent Trace)", expanded=False):
+    # full trace (collapsible, still available for inspection)
+    with st.expander("🔍 完整检索轨迹 (结构化)", expanded=False):
         for step in result.trace:
             st.markdown(
                 f"**Step {step.iteration}** — query: `{step.query}`  \n"

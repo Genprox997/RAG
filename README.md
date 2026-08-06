@@ -19,7 +19,7 @@
 | **Agentic** | Query 改写/分解 → 多步检索 → LLM 自省（解析失败重试 / confidence 阈值早停 / 空检索降级） | Self-RAG 思路 |
 | **生成** | 流式输出 + 强制引用 [n] | 引用溯源 / 可控生成 |
 | **评测** | Faithfulness / Answer Relevancy / Context Relevance | RAGAS 式自动评测 |
-| **界面** | Streamlit + 可展开检索轨迹 | 可演示 Demo |
+| **界面** | Streamlit + 流式「思考过程」(Agent Trace 实时渲染) + 可展开检索轨迹 | 可演示 Demo |
 
 ---
 

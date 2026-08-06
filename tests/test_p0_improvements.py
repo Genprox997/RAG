@@ -103,34 +103,34 @@ def test_build_meta_fields():
     assert meta["index_type"] == "IndexFlatIP"
 
 
-def test_index_meta_validation_match_ok(tmp_path):
+def test_index_meta_validation_match_ok(safe_tmp_path):
     from src.retrieval import HybridIndex
 
-    _write_synthetic_index(str(tmp_path), dim=8, provider="local")
-    hi = HybridIndex(str(tmp_path))  # must not raise
+    _write_synthetic_index(str(safe_tmp_path), dim=8, provider="local")
+    hi = HybridIndex(str(safe_tmp_path))  # must not raise
     assert hi.index.d == 8
     assert hi.meta["embed_dim"] == 8
 
 
-def test_index_meta_validation_mismatch_raises(tmp_path):
+def test_index_meta_validation_mismatch_raises(safe_tmp_path):
     import pytest
 
     from src.retrieval import HybridIndex
 
     # meta claims dim 16 but the FAISS index is actually dim 8 -> corruption guard
-    _write_synthetic_index(str(tmp_path), dim=8, meta_dim=16, provider="local")
+    _write_synthetic_index(str(safe_tmp_path), dim=8, meta_dim=16, provider="local")
     with pytest.raises(RuntimeError):
-        HybridIndex(str(tmp_path))
+        HybridIndex(str(safe_tmp_path))
 
 
-def test_vector_search_dim_guard(monkeypatch, tmp_path):
+def test_vector_search_dim_guard(monkeypatch, safe_tmp_path):
     import pytest
 
     import src.retrieval as R
     from src.retrieval import HybridIndex
 
-    _write_synthetic_index(str(tmp_path), dim=8, provider="local")
-    hi = HybridIndex(str(tmp_path))
+    _write_synthetic_index(str(safe_tmp_path), dim=8, provider="local")
+    hi = HybridIndex(str(safe_tmp_path))
     # simulate a query embedding whose dim (4) != index dim (8)
     monkeypatch.setattr(R.llm, "embed", lambda texts, task=None: [[0.0] * 4])
     with pytest.raises(RuntimeError):
@@ -277,14 +277,14 @@ def test_rerank_cross_encoder_missing_falls_back(monkeypatch):
     assert ranked[0] in ("关于苹果公司的财报", "苹果手机的最新评测")
 
 
-def test_retrieve_routes_to_local_rerank(monkeypatch, tmp_path):
+def test_retrieve_routes_to_local_rerank(monkeypatch, safe_tmp_path):
     import src.rerank as RR
     import src.retrieval as R
     from src.retrieval import HybridIndex
 
-    _write_synthetic_index(str(tmp_path), dim=8, provider="local")
+    _write_synthetic_index(str(safe_tmp_path), dim=8, provider="local")
     monkeypatch.setattr(R.llm, "embed", lambda texts, task=None: [[1.0] * 8 for _ in texts])
-    hi = HybridIndex(str(tmp_path))
+    hi = HybridIndex(str(safe_tmp_path))
 
     # baseline order under RRF only
     hi.s.rerank_provider = "none"
@@ -317,30 +317,30 @@ class _ScriptedChat:
         return self._responses.pop(0)
 
 
-def _make_agent(tmp_path, chat):
+def _make_agent(safe_tmp_path, chat):
     import src.llm as LLM
     import src.retrieval as R
     from src.agent import RAGAgent
     from src.retrieval import HybridIndex
 
-    _write_synthetic_index(str(tmp_path), dim=8, provider="local")
+    _write_synthetic_index(str(safe_tmp_path), dim=8, provider="local")
     # retrieval needs embeddings; provide deterministic vectors (no network)
     LLM.embed = lambda texts, task=None: [[1.0] * 8 for _ in texts]
     R.llm.embed = LLM.embed
     LLM.chat = chat
-    hi = HybridIndex(str(tmp_path))
+    hi = HybridIndex(str(safe_tmp_path))
     hi.s.reflect_confidence_threshold = 0.8
     hi.s.max_sub_queries = 4
     return RAGAgent(hi), hi
 
 
-def test_agent_dynamic_sub_queries_count(monkeypatch, tmp_path):
+def test_agent_dynamic_sub_queries_count(monkeypatch, safe_tmp_path):
     from src.agent import RAGAgent
 
     plan = '{"search_query":"光学设计","sub_queries":["像差校正","MTF评价","CODE V优化","第四个保留","第五个应被截断"]}'
     refl = '{"sufficient":true,"confidence":0.95,"gap":"","next_query":""}'
     chat = _ScriptedChat([plan, refl])
-    agent, _ = _make_agent(tmp_path, chat)
+    agent, _ = _make_agent(safe_tmp_path, chat)
     res = agent.run("光学设计基础")
     # LLM emitted 4 sub-queries; cap is 4 so all kept, the 5th would be dropped
     q0 = res.trace[0].query
@@ -349,24 +349,24 @@ def test_agent_dynamic_sub_queries_count(monkeypatch, tmp_path):
     assert "第五个应被截断" not in q0, "sub_queries must be capped at max_sub_queries"
 
 
-def test_agent_confidence_threshold_early_stop(monkeypatch, tmp_path):
+def test_agent_confidence_threshold_early_stop(monkeypatch, safe_tmp_path):
     plan = '{"search_query":"q","sub_queries":[]}'
     refl = '{"sufficient":false,"confidence":0.9,"gap":"需要更多细节","next_query":"补充查询"}'
     chat = _ScriptedChat([plan, refl])
-    agent, _ = _make_agent(tmp_path, chat)
+    agent, _ = _make_agent(safe_tmp_path, chat)
     res = agent.run("某问题")
     # confidence 0.9 >= threshold 0.8 -> stop after first reflection
     assert res.iterations == 1, res.trace
     assert res.trace[0].reflection.startswith("insufficient(conf=0.90)")
 
 
-def test_agent_parse_failure_retry_then_fallback(monkeypatch, tmp_path):
+def test_agent_parse_failure_retry_then_fallback(monkeypatch, safe_tmp_path):
     plan = '{"search_query":"q","sub_queries":[]}'
     garbage1 = "I cannot output JSON here."          # initial reflection
     garbage2 = "still not json"                        # strict retry
     ok = '{"sufficient":true,"confidence":1.0,"gap":"","next_query":""}'
     chat = _ScriptedChat([plan, garbage1, garbage2, ok])
-    agent, _ = _make_agent(tmp_path, chat)
+    agent, _ = _make_agent(safe_tmp_path, chat)
     res = agent.run("某问题")  # must not raise / must not prematurely stop
     assert res.iterations == 2, res.trace
     # both initial + strict-retry reflection calls happened (plan + 2 fails + ok)
@@ -374,10 +374,10 @@ def test_agent_parse_failure_retry_then_fallback(monkeypatch, tmp_path):
     assert len(res.context) > 0
 
 
-def test_agent_empty_retrieval_graceful(monkeypatch, tmp_path):
+def test_agent_empty_retrieval_graceful(monkeypatch, safe_tmp_path):
     plan = '{"search_query":"q","sub_queries":[]}'
     chat = _ScriptedChat([plan])
-    agent, hi = _make_agent(tmp_path, chat)
+    agent, hi = _make_agent(safe_tmp_path, chat)
     hi.retrieve = lambda q: []  # force empty retrieval
     res = agent.run("某问题")     # must not raise
     assert res.empty_retrieval is True
@@ -422,14 +422,14 @@ def test_critic_llm_wiring_finds_hallucination_and_omission():
     assert any("CODE V" in m for m in r.missing)
 
 
-def test_eval_includes_critic_fields(monkeypatch, tmp_path):
+def test_eval_includes_critic_fields(monkeypatch, safe_tmp_path):
     import src.llm as LLM
     import src.retrieval as R
     from src.agent import RAGAgent
     from src.eval import evaluate_item
     from src.retrieval import HybridIndex
 
-    _write_synthetic_index(str(tmp_path), dim=8, provider="local")
+    _write_synthetic_index(str(safe_tmp_path), dim=8, provider="local")
     LLM.embed = lambda texts, task=None: [[1.0] * 8 for _ in texts]
     R.llm.embed = LLM.embed
 
@@ -449,7 +449,7 @@ def test_eval_includes_critic_fields(monkeypatch, tmp_path):
 
     LLM.chat = fake_chat
 
-    hi = HybridIndex(str(tmp_path))
+    hi = HybridIndex(str(safe_tmp_path))
     agent = RAGAgent(hi)
     row = evaluate_item(agent, "什么是 MTF", relevant_sources=["d0"])
     assert "critic_faithful" in row
@@ -508,19 +508,19 @@ def test_safe_answer_abstains_and_annotates(monkeypatch):
 
 
 # ------------------- P2-1: local response cache (embeddings + LLM) -------------------
-def test_cache_roundtrip(tmp_path):
+def test_cache_roundtrip(safe_tmp_path):
     from src.cache import ResponseCache
 
-    c = ResponseCache(cache_dir=str(tmp_path), enabled=True)
+    c = ResponseCache(cache_dir=str(safe_tmp_path), enabled=True)
     assert c.get("embed", (["a"],)) is None
     c.set("embed", (["a"],), [[0.1, 0.2]])
     assert c.get("embed", (["a"],)) == [[0.1, 0.2]]
 
 
-def test_cache_miss_then_hit_counts_compute(tmp_path):
+def test_cache_miss_then_hit_counts_compute(safe_tmp_path):
     from src.cache import ResponseCache
 
-    c = ResponseCache(cache_dir=str(tmp_path), enabled=True)
+    c = ResponseCache(cache_dir=str(safe_tmp_path), enabled=True)
     calls = {"n": 0}
 
     def compute():
@@ -535,10 +535,10 @@ def test_cache_miss_then_hit_counts_compute(tmp_path):
     assert calls["n"] == 2
 
 
-def test_cache_disabled_never_stores(tmp_path):
+def test_cache_disabled_never_stores(safe_tmp_path):
     from src.cache import ResponseCache
 
-    c = ResponseCache(cache_dir=str(tmp_path), enabled=False)
+    c = ResponseCache(cache_dir=str(safe_tmp_path), enabled=False)
     calls = {"n": 0}
 
     def compute():
@@ -551,14 +551,14 @@ def test_cache_disabled_never_stores(tmp_path):
     assert c.get("chat", ("k",)) is None
 
 
-def test_llm_embed_is_cached(monkeypatch, tmp_path):
+def test_llm_embed_is_cached(monkeypatch, safe_tmp_path):
     import src.llm as LLM
     from src.cache import ResponseCache
 
     # neutralize any leaked LLM.chat/embed from upstream tests, then isolate cache
     monkeypatch.setattr(LLM, "embed", _REAL_EMBED)
     monkeypatch.setattr(LLM, "chat", _REAL_CHAT)
-    cache = ResponseCache(cache_dir=str(tmp_path), enabled=True)
+    cache = ResponseCache(cache_dir=str(safe_tmp_path), enabled=True)
     monkeypatch.setattr(LLM, "default_cache", lambda: cache)
 
     calls = {"n": 0}
@@ -578,14 +578,14 @@ def test_llm_embed_is_cached(monkeypatch, tmp_path):
     assert calls["n"] == 2
 
 
-def test_llm_chat_is_cached(monkeypatch, tmp_path):
+def test_llm_chat_is_cached(monkeypatch, safe_tmp_path):
     import src.llm as LLM
     from src.cache import ResponseCache
 
     # neutralize any leaked LLM.chat/embed from upstream tests, then isolate cache
     monkeypatch.setattr(LLM, "embed", _REAL_EMBED)
     monkeypatch.setattr(LLM, "chat", _REAL_CHAT)
-    cache = ResponseCache(cache_dir=str(tmp_path), enabled=True)
+    cache = ResponseCache(cache_dir=str(safe_tmp_path), enabled=True)
     monkeypatch.setattr(LLM, "default_cache", lambda: cache)
 
     calls = {"n": 0}
@@ -605,13 +605,13 @@ def test_llm_chat_is_cached(monkeypatch, tmp_path):
 
 
 # ------------------- P2-2: phased observability (timing + token stats) ----------
-def test_agent_stats_recorded(tmp_path):
+def test_agent_stats_recorded(safe_tmp_path):
     from src.agent import RAGAgent
 
     plan = '{"search_query":"q","sub_queries":[]}'
     refl = '{"sufficient":true,"confidence":0.95,"gap":"","next_query":""}'
     chat = _ScriptedChat([plan, refl])
-    agent, _ = _make_agent(tmp_path, chat)
+    agent, _ = _make_agent(safe_tmp_path, chat)
     res = agent.run("某问题")
     st = res.stats
     assert set(["plan_ms", "retrieve_ms", "rerank_ms", "reflect_ms", "total_ms",
@@ -624,13 +624,13 @@ def test_agent_stats_recorded(tmp_path):
     assert st["retrieved_total"] == len(res.context)
 
 
-def test_retrieve_reports_substep_timings(tmp_path):
+def test_retrieve_reports_substep_timings(safe_tmp_path):
     import src.retrieval as R
     from src.retrieval import HybridIndex
 
-    _write_synthetic_index(str(tmp_path), dim=8, provider="local")
+    _write_synthetic_index(str(safe_tmp_path), dim=8, provider="local")
     R.llm.embed = lambda texts, task=None: [[1.0] * 8 for _ in texts]
-    hi = HybridIndex(str(tmp_path))
+    hi = HybridIndex(str(safe_tmp_path))
     hi.retrieve("q")
     assert "vector_ms" in hi.timings and "bm25_ms" in hi.timings
     assert "rrf_ms" in hi.timings and "rerank_ms" in hi.timings
@@ -639,13 +639,13 @@ def test_retrieve_reports_substep_timings(tmp_path):
         assert isinstance(v, (int, float)) and v >= 0
 
 
-def test_empty_retrieval_still_reports_stats(tmp_path):
+def test_empty_retrieval_still_reports_stats(safe_tmp_path):
     from src.agent import RAGAgent
 
     plan = '{"search_query":"q","sub_queries":[]}'
     refl = '{"sufficient":true,"confidence":1.0,"gap":"","next_query":""}'
     chat = _ScriptedChat([plan, refl])
-    agent, _ = _make_agent(tmp_path, chat)
+    agent, _ = _make_agent(safe_tmp_path, chat)
     # force every retrieve to return nothing -> early graceful degradation
     agent.index.retrieve = lambda q, **kw: []
     res = agent.run("任何问题")
@@ -653,5 +653,48 @@ def test_empty_retrieval_still_reports_stats(tmp_path):
     st = res.stats
     assert st["llm_calls"] == 1, "only the plan call happened"
     assert st["total_ms"] >= 0 and st["plan_ms"] >= 0
+
+
+# ------------------- P2-3: streaming agent trace (UI thought process) ---------
+def test_run_streaming_emits_expected_events(safe_tmp_path):
+    from src.agent import RAGAgent
+
+    plan = '{"search_query":"光学设计","sub_queries":["像差","MTF"]}'
+    refl = '{"sufficient":true,"confidence":0.95,"gap":"","next_query":""}'
+    chat = _ScriptedChat([plan, refl])
+    agent, _ = _make_agent(safe_tmp_path, chat)
+    events = list(agent.run_streaming("光学设计基础"))
+
+    types = [e["type"] for e in events]
+    assert types[0] == "plan"
+    assert "retrieve" in types and "reflect" in types and types[-1] == "done"
+    # plan carries the rewritten query + sub-queries
+    plan_ev = next(e for e in events if e["type"] == "plan")
+    assert plan_ev["search_query"] == "光学设计"
+    assert "像差" in plan_ev["sub_queries"]
+    # the done event carries a usable result
+    result = events[-1]["result"]
+    assert len(result.context) > 0
+    assert result.iterations == 1
+
+
+def test_run_streaming_matches_run(safe_tmp_path):
+    from src.agent import RAGAgent
+
+    plan = '{"search_query":"q","sub_queries":[]}'
+    refl = '{"sufficient":false,"confidence":0.7,"gap":"需要更多","next_query":"补充"}'
+    refl2 = '{"sufficient":true,"confidence":0.95,"gap":"","next_query":""}'
+    script = [plan, refl, refl2]
+    # Build/run agent1 to completion BEFORE constructing agent2: _make_agent sets
+    # the global LLM.chat, so running both before either finishes would make
+    # agent1 reuse agent2's scripted chat and exhaust it.
+    agent1, _ = _make_agent(safe_tmp_path, _ScriptedChat(list(script)))
+    streamed = [e for e in agent1.run_streaming("某问题") if e["type"] == "done"][-1]["result"]
+
+    agent2, _ = _make_agent(safe_tmp_path, _ScriptedChat(list(script)))
+    direct = agent2.run("某问题")
+    assert streamed.iterations == direct.iterations
+    assert len(streamed.context) == len(direct.context)
+    assert len(streamed.trace) == len(direct.trace)
 
 
