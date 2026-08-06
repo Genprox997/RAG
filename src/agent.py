@@ -15,8 +15,8 @@ from src.retrieval import HybridIndex, Hit
 PLAN_PROMPT = """You are a retrieval planner for a RAG system.
 Given the user's question, produce an optimized search strategy.
 - Rewrite the question into a concise, keyword-rich search query.
-- If the question is complex / multi-part, also provide up to 2 sub-queries
-  that together cover the question from different angles.
+- If the question is complex / multi-part, also provide sub-queries (as many as
+  needed, usually 1-3) that together cover the question from different angles.
 
 Respond ONLY with JSON: {"search_query": str, "sub_queries": [str]}
 
@@ -30,10 +30,12 @@ Question: {question}
 
 Decide:
 - sufficient: true if the context contains the information needed to answer.
+- confidence: a float in [0,1] estimating how sure you are the context is sufficient
+  (1.0 = fully confident, 0.0 = clearly insufficient).
 - gap: what specific information is still missing (empty string if sufficient).
 - next_query: a focused search query to find the missing info (empty string if sufficient).
 
-Respond ONLY with JSON: {"sufficient": bool, "gap": str, "next_query": str}"""
+Respond ONLY with JSON: {"sufficient": bool, "confidence": float, "gap": str, "next_query": str}"""
 
 
 @dataclass
@@ -42,8 +44,9 @@ class TraceStep:
     query: str
     n_retrieved: int
     top_sources: list[str]
-    reflection: str = ""        # "sufficient" / "insufficient: <gap>"
+    reflection: str = ""        # "sufficient" / "insufficient(conf=..): <gap>" / "no chunks retrieved"
     next_query: str = ""
+    confidence: float | None = None
 
 
 @dataclass
@@ -51,6 +54,7 @@ class AgentResult:
     context: list[Hit]
     trace: list[TraceStep] = field(default_factory=list)
     iterations: int = 0
+    empty_retrieval: bool = False
 
 
 def _parse_json(text: str) -> dict:
@@ -65,6 +69,10 @@ def _parse_json(text: str) -> dict:
     if start != -1 and end != -1:
         text = text[start : end + 1]
     return json.loads(text)
+
+
+def _clamp01(x: float) -> float:
+    return max(0.0, min(1.0, x))
 
 
 def _format_context(chunks: list[Hit], max_chars: int = 1200) -> str:
@@ -86,6 +94,30 @@ class RAGAgent:
             else:
                 acc[h.chunk_id] = h
 
+    def _reflect(self, question: str, context_text: str, strict: bool = False) -> str:
+        prompt = REFLECT_PROMPT.replace("{context}", context_text).replace("{question}", question)
+        if strict:
+            prompt += "\n\n[System] Output STRICT JSON only, no markdown fences, no extra prose."
+        return llm.chat([{"role": "user", "content": prompt}], json_mode=True)
+
+    def _parse_reflection(self, text: str) -> dict | None:
+        """Parse a reflection verdict, or None if it cannot be parsed."""
+        try:
+            v = _parse_json(text)
+        except Exception:
+            return None
+        sufficient = bool(v.get("sufficient"))
+        try:
+            confidence = _clamp01(float(v.get("confidence", 1.0 if sufficient else 0.0)))
+        except Exception:
+            confidence = 1.0 if sufficient else 0.0
+        return {
+            "sufficient": sufficient,
+            "confidence": confidence,
+            "gap": str(v.get("gap", "")),
+            "next_query": str(v.get("next_query", "") or ""),
+        }
+
     def run(self, question: str) -> AgentResult:
         s = self.index.s
         # 1) plan
@@ -93,9 +125,13 @@ class RAGAgent:
             [{"role": "user", "content": PLAN_PROMPT.replace("{question}", question)}],
             json_mode=True,
         )
-        plan = _parse_json(plan_txt)
+        try:
+            plan = _parse_json(plan_txt)
+        except Exception:
+            plan = {"search_query": question, "sub_queries": []}
         search_query = plan.get("search_query") or question
-        sub_queries = plan.get("sub_queries", []) or []
+        # LLM decides the number of sub-queries; cap for safety (was hard-coded <=2)
+        sub_queries = (plan.get("sub_queries", []) or [])[: s.max_sub_queries]
 
         acc: dict[int, Hit] = {}
         trace: list[TraceStep] = []
@@ -113,44 +149,65 @@ class RAGAgent:
             )
         )
 
+        # graceful degradation: nothing retrieved at all
+        if not acc:
+            trace[-1].reflection = "no chunks retrieved"
+            return AgentResult(context=[], trace=trace, iterations=0, empty_retrieval=True)
+
         # 3) self-reflection loop
         iterations = 0
+        empty_streak = 0
+        prev_n = len(acc)
         for it in range(1, s.max_iterations + 1):
             iterations = it
             ordered = sorted(acc.values(), key=lambda x: -x.score)
-            reflect_txt = llm.chat(
-                [
-                    {
-                        "role": "user",
-                        "content": REFLECT_PROMPT.replace("{context}", _format_context(ordered)).replace(
-                            "{question}", question
-                        ),
-                    }
-                ],
-                json_mode=True,
-            )
-            try:
-                verdict = _parse_json(reflect_txt)
-            except Exception:
-                verdict = {"sufficient": True, "gap": "", "next_query": ""}
-            sufficient = bool(verdict.get("sufficient"))
-            next_query = verdict.get("next_query", "") or ""
-            last = trace[-1]
-            last.reflection = "sufficient" if sufficient else f"insufficient: {verdict.get('gap','')}"
-            last.next_query = next_query
+            reflect_txt = self._reflect(question, _format_context(ordered))
+            verdict = self._parse_reflection(reflect_txt)
 
-            if sufficient or not next_query:
+            # JSON parse failed -> retry once with a stricter instruction
+            if verdict is None:
+                verdict = self._parse_reflection(self._reflect(question, _format_context(ordered), strict=True))
+
+            if verdict is None:
+                # still unparseable: conservative fallback — assume insufficient and
+                # do one more broad retrieval rather than prematurely stopping.
+                verdict = {
+                    "sufficient": False,
+                    "confidence": 0.0,
+                    "gap": "(reflection parse failed)",
+                    "next_query": question,
+                }
+
+            sufficient = verdict["sufficient"]
+            confidence = verdict["confidence"]
+            next_query = verdict["next_query"]
+            last = trace[-1]
+            tag = "sufficient" if sufficient else f"insufficient(conf={confidence:.2f}): {verdict['gap']}"
+            last.reflection = tag
+            last.next_query = next_query
+            last.confidence = confidence
+
+            # stop when: explicitly sufficient, OR confident enough, OR no follow-up
+            if sufficient or confidence >= s.reflect_confidence_threshold or not next_query:
                 break
+
             # 4) targeted re-retrieval
             self._dedup_merge(acc, self.index.retrieve(next_query))
+            n_now = len(acc)
+            empty_streak = empty_streak + 1 if n_now == prev_n else 0
+            prev_n = n_now
             trace.append(
                 TraceStep(
                     iteration=it,
                     query=next_query,
-                    n_retrieved=len(acc),
+                    n_retrieved=n_now,
                     top_sources=[h.source for h in sorted(acc.values(), key=lambda x: -x.score)[:3]],
                 )
             )
+            # two consecutive retrievals returned nothing new -> stop gracefully
+            if empty_streak >= 2:
+                trace[-1].reflection = "no new chunks; stopping"
+                break
 
         final = sorted(acc.values(), key=lambda x: -x.score)[: s.top_k_final]
         return AgentResult(context=final, trace=trace, iterations=iterations)

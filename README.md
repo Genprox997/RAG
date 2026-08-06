@@ -16,7 +16,7 @@
 | **关键词检索** | BM25（中英混合分词） | 稀疏检索 + 中文支持 |
 | **融合** | Reciprocal Rank Fusion (RRF) | 混合检索工程实现 |
 | **重排** | 云端 Cross-Encoder（Jina/Cohere）/ **本地离线重排** | 两阶段检索范式 |
-| **Agentic** | Query 改写/分解 → 多步检索 → LLM 自省 | Self-RAG 思路 |
+| **Agentic** | Query 改写/分解 → 多步检索 → LLM 自省（解析失败重试 / confidence 阈值早停 / 空检索降级） | Self-RAG 思路 |
 | **生成** | 流式输出 + 强制引用 [n] | 引用溯源 / 可控生成 |
 | **评测** | Faithfulness / Answer Relevancy / Context Relevance | RAGAS 式自动评测 |
 | **界面** | Streamlit + 可展开检索轨迹 | 可演示 Demo |
@@ -81,6 +81,8 @@ streamlit run app.py
 > **离线 Embedding（推荐，免 API 费用）**：默认走云端 Embedding（需 `EMBED_API_KEY`）。
 > 也可在 `.env` 设置 `EMBED_PROVIDER=local`，改用本地 `fastembed` 模型（`BAAI/bge-small-zh-v1.5`，512 维，中文优化），无需联网即可建库。
 > 注意：切换到 local 后 `EMBED_DIM` 需与模型一致（如 512）。
+
+> **Agentic 自省调参（`.env`）**：`MAX_ITERATIONS`（默认 3）控制多步检索上限；`REFLECT_CONFIDENCE_THRESHOLD`（默认 0.8）为连续置信度阈值，达到即早停；`MAX_SUB_QUERIES`（默认 4）为子查询数量安全上限（由 LLM 自行决定数量，截断保护）。反射 JSON 解析失败会自动重试一次，仍失败则保守补充检索而非过早停止；首轮检索为空时优雅降级返回空上下文而不崩溃。
 
 ---
 

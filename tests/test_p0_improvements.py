@@ -297,4 +297,85 @@ def test_retrieve_routes_to_local_rerank(monkeypatch, tmp_path):
     assert reranked == list(reversed(base)), (reranked, base)
 
 
+# ------------------- P1-2: robust agentic self-reflection -------------------
+class _ScriptedChat:
+    """Replay a list of responses for src.llm.chat (records call count)."""
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = 0
+
+    def __call__(self, messages, json_mode=False):
+        self.calls += 1
+        return self._responses.pop(0)
+
+
+def _make_agent(tmp_path, chat):
+    import src.llm as LLM
+    import src.retrieval as R
+    from src.agent import RAGAgent
+    from src.retrieval import HybridIndex
+
+    _write_synthetic_index(str(tmp_path), dim=8, provider="local")
+    # retrieval needs embeddings; provide deterministic vectors (no network)
+    LLM.embed = lambda texts, task=None: [[1.0] * 8 for _ in texts]
+    R.llm.embed = LLM.embed
+    LLM.chat = chat
+    hi = HybridIndex(str(tmp_path))
+    hi.s.reflect_confidence_threshold = 0.8
+    hi.s.max_sub_queries = 4
+    return RAGAgent(hi), hi
+
+
+def test_agent_dynamic_sub_queries_count(monkeypatch, tmp_path):
+    from src.agent import RAGAgent
+
+    plan = '{"search_query":"光学设计","sub_queries":["像差校正","MTF评价","CODE V优化","第四个保留","第五个应被截断"]}'
+    refl = '{"sufficient":true,"confidence":0.95,"gap":"","next_query":""}'
+    chat = _ScriptedChat([plan, refl])
+    agent, _ = _make_agent(tmp_path, chat)
+    res = agent.run("光学设计基础")
+    # LLM emitted 4 sub-queries; cap is 4 so all kept, the 5th would be dropped
+    q0 = res.trace[0].query
+    for sub in ["光学设计", "像差校正", "MTF评价", "CODE V优化"]:
+        assert sub in q0, q0
+    assert "第五个应被截断" not in q0, "sub_queries must be capped at max_sub_queries"
+
+
+def test_agent_confidence_threshold_early_stop(monkeypatch, tmp_path):
+    plan = '{"search_query":"q","sub_queries":[]}'
+    refl = '{"sufficient":false,"confidence":0.9,"gap":"需要更多细节","next_query":"补充查询"}'
+    chat = _ScriptedChat([plan, refl])
+    agent, _ = _make_agent(tmp_path, chat)
+    res = agent.run("某问题")
+    # confidence 0.9 >= threshold 0.8 -> stop after first reflection
+    assert res.iterations == 1, res.trace
+    assert res.trace[0].reflection.startswith("insufficient(conf=0.90)")
+
+
+def test_agent_parse_failure_retry_then_fallback(monkeypatch, tmp_path):
+    plan = '{"search_query":"q","sub_queries":[]}'
+    garbage1 = "I cannot output JSON here."          # initial reflection
+    garbage2 = "still not json"                        # strict retry
+    ok = '{"sufficient":true,"confidence":1.0,"gap":"","next_query":""}'
+    chat = _ScriptedChat([plan, garbage1, garbage2, ok])
+    agent, _ = _make_agent(tmp_path, chat)
+    res = agent.run("某问题")  # must not raise / must not prematurely stop
+    assert res.iterations == 2, res.trace
+    # both initial + strict-retry reflection calls happened (plan + 2 fails + ok)
+    assert chat.calls >= 4
+    assert len(res.context) > 0
+
+
+def test_agent_empty_retrieval_graceful(monkeypatch, tmp_path):
+    plan = '{"search_query":"q","sub_queries":[]}'
+    chat = _ScriptedChat([plan])
+    agent, hi = _make_agent(tmp_path, chat)
+    hi.retrieve = lambda q: []  # force empty retrieval
+    res = agent.run("某问题")     # must not raise
+    assert res.empty_retrieval is True
+    assert len(res.context) == 0
+    assert res.trace[-1].reflection == "no chunks retrieved"
+    assert res.iterations == 0
+
+
 

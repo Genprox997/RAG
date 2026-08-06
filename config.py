@@ -50,6 +50,10 @@ class Settings:
 
     # ---- Agentic loop ----
     max_iterations: int = int(_get("MAX_ITERATIONS", "3"))
+    # continuous-confidence threshold to stop self-reflection early
+    reflect_confidence_threshold: float = float(_get("REFLECT_CONFIDENCE_THRESHOLD", "0.8"))
+    # LLM may emit any number of sub-queries; cap for safety (was hard-coded <=2)
+    max_sub_queries: int = int(_get("MAX_SUB_QUERIES", "4"))
 
     # ---- Paths ----
     index_dir: str = _get("INDEX_DIR", "data/index")
