@@ -10,12 +10,25 @@ _WORD = re.compile(r"[a-z0-9]+")
 
 
 def tokenize(text: str) -> list[str]:
+    """Tokenizer for BM25 / keyword retrieval.
+
+    - English / numeric runs -> lowercase word tokens.
+    - CJK characters -> unigrams AND adjacent bigrams, so multi-char terms like
+      "混合检索" / "MicroLED检测" yield phrase-level tokens. This improves recall
+      for mixed Chinese/English technical corpora while staying dependency-free
+      and fully offline (no jieba required).
+    """
     text = (text or "").lower()
     tokens: list[str] = []
     # English / numeric tokens
     tokens.extend(_WORD.findall(text))
-    # Each CJK character as its own token (cheap, effective for BM25)
-    tokens.extend(_CJK.findall(text))
+
+    cjk = _CJK.findall(text)
+    # unigrams (single characters)
+    tokens.extend(cjk)
+    # adjacent bigrams (phrase-level signal)
+    for i in range(len(cjk) - 1):
+        tokens.append(cjk[i] + cjk[i + 1])
     return tokens
 
 

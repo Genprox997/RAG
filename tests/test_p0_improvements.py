@@ -128,3 +128,53 @@ def test_vector_search_dim_guard(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError):
         hi._vector_search("anything", 3)
 
+
+# ------------------- P0-3: Chinese BM25 tokenizer (CJK bigram) -------------------
+def test_tokenize_bigram_emits_phrase_tokens():
+    from src.tokenize import tokenize
+
+    toks = tokenize("检索增强生成")
+    assert "检索" in toks and "增强" in toks, "CJK bigrams must be produced"
+    # unigrams still present
+    assert {"检", "索", "增", "强", "生", "成"}.issubset(set(toks))
+
+
+def test_tokenize_phrase_overlap():
+    from src.tokenize import tokenize
+
+    doc = tokenize("混合检索提升召回率")
+    q = tokenize("什么是混合检索")
+    overlap = set(doc) & set(q)
+    # the bigram "检索" should be shared, giving BM25 a phrase-level signal
+    assert "检索" in overlap
+
+
+def test_tokenize_english_and_mixed():
+    from src.tokenize import tokenize
+
+    toks = tokenize("CODE V 光学设计 MicroLED 2024")
+    assert "code" in toks and "v" in toks and "microled" in toks and "2024" in toks
+    # mixed CJK term yields bigram
+    assert "设计" in toks
+
+
+def test_tokenize_bm25_recall_improves():
+    from rank_bm25 import BM25Okapi
+
+    from src.tokenize import tokenize
+
+    # 3-doc corpus so singleton query terms get positive IDF (with only 2 docs,
+    # a term appearing once yields IDF=log(1)=0 and a zero score).
+    corpus = [
+        tokenize("混合检索提升召回率"),
+        tokenize("图像处理与滤波技术"),
+        tokenize("天气预报与温度变化"),
+    ]
+    bm25 = BM25Okapi(corpus)
+    scores = bm25.get_scores(tokenize("混合检索方法"))
+    assert scores[0] > 0, "on-topic doc must score > 0"
+    assert scores[0] > scores[1] and scores[0] > scores[2], (
+        "bigram tokenizer should rank the on-topic doc first"
+    )
+
+
