@@ -378,4 +378,76 @@ def test_agent_empty_retrieval_graceful(monkeypatch, tmp_path):
     assert res.iterations == 0
 
 
+# ------------------- P1-3: answer-level critic (hallucination / omission) -----
+def test_critic_detect_unsupported_number():
+    from src.critic import detect_unsupported_numbers
+
+    ctx = "实验显示准确率为 87%，样本量 1200。"
+    # answer invents a different number -> should be flagged
+    bad = "实验显示准确率为 99.5%，样本量 1200。"
+    flagged = detect_unsupported_numbers(bad, ctx)
+    assert "99.5" in flagged
+    assert "1200" not in flagged  # grounded number is fine
+    # fully grounded answer -> nothing flagged
+    ok = "准确率是 87%。"
+    assert detect_unsupported_numbers(ok, ctx) == []
+
+
+def test_critic_llm_wiring_finds_hallucination_and_omission():
+    from src.critic import critic
+
+    ctx = "光学系统用 MTF 评价成像质量；CODE V 用于优化设计。"
+    ans = "MTF 可评价成像质量（上下文有），但声称系统成本为 500 万元（编造）。"
+
+    def fake_chat(messages, json_mode=False):
+        # ignore the prompt, return a scripted judgment
+        return (
+            '{"faithful": false, '
+            '"hallucinated": ["系统成本为 500 万元"], '
+            '"missing": ["CODE V 用于优化设计这一事实未被引用"], '
+            '"issues": ["answer invents a cost not in context"]}'
+        )
+
+    r = critic("光学系统如何评价", ans, ctx, chat_fn=fake_chat)
+    assert r.faithful is False
+    assert any("500" in h for h in r.hallucinated)
+    assert any("CODE V" in m for m in r.missing)
+
+
+def test_eval_includes_critic_fields(monkeypatch, tmp_path):
+    import src.llm as LLM
+    import src.retrieval as R
+    from src.agent import RAGAgent
+    from src.eval import evaluate_item
+    from src.retrieval import HybridIndex
+
+    _write_synthetic_index(str(tmp_path), dim=8, provider="local")
+    LLM.embed = lambda texts, task=None: [[1.0] * 8 for _ in texts]
+    R.llm.embed = LLM.embed
+
+    # scripted chat: plan, reflection(sufficient), answer, critic
+    script = [
+        '{"search_query":"光学","sub_queries":[]}',
+        '{"sufficient":true,"confidence":0.95,"gap":"","next_query":""}',
+        "MTF 用于评价成像质量。",  # generated answer
+        '{"faithful": true, "hallucinated": [], "missing": [], "issues": []}',  # critic
+    ]
+    calls = {"n": 0}
+
+    def fake_chat(messages, json_mode=False):
+        i = calls["n"]
+        calls["n"] += 1
+        return script[i]
+
+    LLM.chat = fake_chat
+
+    hi = HybridIndex(str(tmp_path))
+    agent = RAGAgent(hi)
+    row = evaluate_item(agent, "什么是 MTF", relevant_sources=["d0"])
+    assert "critic_faithful" in row
+    assert row["critic_faithful"] is True
+    assert row["critic_hallucinated"] == []
+    assert "retrieval" in row and "recall@1" in row["retrieval"]
+
+
 

@@ -15,6 +15,7 @@ from src.agent import RAGAgent
 from src.generator import generate, build_context_block
 from src.retrieval import HybridIndex
 from src.metrics import retrieval_metrics
+from src.critic import critic
 
 FAITH_PROMPT = """You are evaluating faithfulness of an answer to retrieved context.
 List each distinct factual claim in the ANSWER, then mark whether it is
@@ -127,6 +128,9 @@ def evaluate_item(
     retrieved_sources = [h.source for h in res.context]
     ks = sorted(set([1, 3, 5, agent.index.s.top_k_final]))
     retrieval = retrieval_metrics(relevant_sources or [], retrieved_sources, ks=ks)
+    # answer-level critique (hallucination / omission), separate from the
+    # context-level self-reflection in the agent loop
+    c = critic(question, answer, res.context)
     return {
         "question": question,
         "answer": answer,
@@ -134,6 +138,10 @@ def evaluate_item(
         "answer_relevancy": round(answer_relevancy(question, answer), 3),
         "context_relevance": round(context_relevance(question, context_text), 3),
         "retrieval": retrieval,
+        "critic_faithful": c.faithful,
+        "critic_hallucinated": c.hallucinated,
+        "critic_missing": c.missing,
+        "critic_issues": c.issues,
         "n_iterations": res.iterations,
         "n_chunks": len(res.context),
     }
@@ -159,6 +167,9 @@ def run_evaluation(golden_path: str = "evaluation/golden_set.json", index_dir: O
         "answer_relevancy": round(sum(r["answer_relevancy"] for r in rows) / n, 3),
         "context_relevance": round(sum(r["context_relevance"] for r in rows) / n, 3),
     }
+    # fraction of answers the answer-level critic judged faithful
+    faithful_rows = [r for r in rows if r.get("critic_faithful")]
+    agg["critic_faithful_rate"] = round(len(faithful_rows) / n, 3)
     agg_retrieval = {
         k: round(sum(v) / len(v), 3) for k, v in retr_accum.items()
     }
@@ -173,4 +184,6 @@ if __name__ == "__main__":
         print("\nRetrieval metrics (source-grounded):")
         print(json.dumps(agg_retrieval, indent=2, ensure_ascii=False))
     for r in rows:
-        print(f"\nQ: {r['question']}\nA: {r['answer'][:200]}...\n  metrics={r}")
+        print(f"\nQ: {r['question']}\nA: {r['answer'][:200]}...")
+        print(f"  critic_faithful={r['critic_faithful']} issues={r['critic_issues']}")
+        print(f"  metrics={r}")
